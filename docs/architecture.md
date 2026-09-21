@@ -23,9 +23,48 @@ Rule Runner                            (implemented: engine/runner.py, engine/ru
 Findings                               (implemented: models.Finding with evidence)
 ```
 
-Only the last three stages run today, against hand-built audit-log fixtures.
-Feeding them real Cloud Audit Logs from the Terraform-defined project is the
-next milestone.
+The Terraform stages are **validated, not deployed**: no GCP resources exist
+and no billing is attached. The last three stages run today against an offline
+corpus (below) and hand-built fixtures. Nothing has been validated against live
+GCP.
+
+## Telemetry sources
+
+```
+              Telemetry
+            /           \
+   Offline dataset      Cloud Logging API
+   (implemented, used)  (implemented, optional, never run live)
+            \           /
+        normalize_gcp_audit_event()
+                  |
+              Rule runner
+                  |
+               Findings
+```
+
+| Component | Status |
+|-----------|--------|
+| Offline replay (`telemetry/file_ingest.py`, `dataset.py`, `replay.py`, `evaluation.py`, `scripts/replay_dataset.py`, `datasets/gcp_audit/`) | implemented and tested |
+| Cloud Logging API backend (`telemetry/gcp_logging.py`, `scripts/live_validate.py`) | implemented, unit-tested with a mocked client, not required, no live run |
+| Terraform lab (`terraform/`) | validated, not deployed |
+
+### Offline replay
+
+- The corpus keeps provenance (`source_type`: `official_example`,
+  `public_sanitized_example`, `synthetic_variant`) and expected rule IDs in an
+  envelope beside the raw event; nothing CloudShield-specific enters
+  `protoPayload`.
+- Loading validates the corpus (duplicate IDs and events, unknown rule IDs,
+  provenance, credential-like strings, non-fictional emails and IPs, timestamps)
+  and fails loudly.
+- Replay modes: `instant` (no sleep; tests and evaluation), `accelerated`
+  (timestamp gap divided by speed) and `realtime`. Every sleep is capped
+  (default 10 s), and missing, invalid or backwards timestamps never sleep, so
+  a bad timestamp cannot stall a replay.
+- Evaluation compares the set of rule IDs that fired with the expected set per
+  event, so multi-label events are scored per rule. Results describe the corpus
+  only.
 
 ## Detection engine (implemented)
 
