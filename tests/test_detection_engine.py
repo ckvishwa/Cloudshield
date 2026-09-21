@@ -84,8 +84,7 @@ PROTECTED = "prod-admin@cloudshield-lab.iam.gserviceaccount.com"
 
 @pytest.fixture(scope="module")
 def repo_rules():
-    # skip_empty: the scaffold still has zero-byte placeholder rule files
-    return load_rules(REPO_RULES, skip_empty=True)
+    return load_rules(REPO_RULES)
 
 
 def _iam_policy_event(role):

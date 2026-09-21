@@ -33,6 +33,7 @@ will come from:
 - custom-mode VPC `cloudshield-vpc` with one private subnet (`10.20.0.0/24`) and no firewall rules
 - service accounts `prod-admin` (protected), `ci-deployer` (approved caller), `app-runtime`; no keys, no project roles
 - impersonation lab foundation: `roles/iam.serviceAccountTokenCreator` scoped to the single `prod-admin` service account
+- audit logging: GCP-IAM-001 uses Admin Activity logs (always on); GCP-IAM-002 needs Data Access logs, enabled for `iam.googleapis.com` only (Service Account Credentials cannot be configured independently)
 - Cloud Audit Log ingestion is planned next
 
 **Status: Terraform validation completed (`fmt`, `init`, `validate`). Nothing has been applied; no GCP resources exist yet.**

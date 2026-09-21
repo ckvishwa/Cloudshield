@@ -51,9 +51,45 @@ module "iam" {
 
 # Cloud Audit Logs
 #
-# Admin Activity audit logs (IAM policy changes, service account creation,
-# GenerateAccessToken / SignJwt calls on iamcredentials.googleapis.com, ...)
-# are always on and cannot be disabled, so nothing is configured for them here.
-# Data Access audit logs are deliberately NOT enabled project-wide: they add
-# cost and noise. If a later detection needs them, enable them per service
-# with a google_project_iam_audit_config scoped to that service.
+# GCP-IAM-001 (IAM policy changes, service account creation, ...) relies on
+# Admin Activity audit logs. Those are always on and cannot be disabled, so
+# nothing is configured for them here.
+#
+# GCP-IAM-002 relies on Service Account Credentials events
+# (iamcredentials.googleapis.com: GenerateAccessToken, GenerateIdToken, SignJwt,
+# SignBlob). Those are Data Access audit logs, which are OFF by default. Google
+# does not allow enabling them for iamcredentials.googleapis.com on its own: the
+# documented way is to enable Data Access audit logs for the IAM API
+# (iam.googleapis.com), which also covers the Service Account Credentials API.
+#
+# Log types, per Google's Service Account Credentials audit logging reference:
+#   GenerateAccessToken -> ADMIN_READ
+#   GenerateIdToken, SignJwt, SignBlob -> DATA_READ and ADMIN_READ
+# so ADMIN_READ and DATA_READ are the minimum set. DATA_WRITE is not needed by
+# any of these methods and stays off.
+#
+# Cost/noise: this also logs other IAM API read calls (for example
+# GetServiceAccount, ListServiceAccounts). It is scoped to iam.googleapis.com
+# only; Data Access logging is NOT enabled for "allServices".
+#
+# Provider semantics: google_project_iam_audit_config is authoritative for ONE
+# service in the project's IAM policy. It leaves audit configs of other services
+# untouched, but it replaces any existing log types or exempted_members already
+# set for iam.googleapis.com, and destroying it removes the iam.googleapis.com
+# config. Do not combine it with google_project_iam_policy (authoritative for
+# the whole policy). No exempted_members are set, so nobody is excluded from
+# the logs CloudShield needs.
+resource "google_project_iam_audit_config" "iam_data_access" {
+  project = var.project_id
+  service = "iam.googleapis.com"
+
+  audit_log_config {
+    log_type = "ADMIN_READ"
+  }
+
+  audit_log_config {
+    log_type = "DATA_READ"
+  }
+
+  depends_on = [google_project_service.apis]
+}

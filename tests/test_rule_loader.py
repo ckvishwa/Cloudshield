@@ -124,7 +124,7 @@ def test_shipped_iam_rules_load():
     import glob
     import os
     pattern = os.path.join(os.path.dirname(__file__), "..", "rules", "iam", "*.yaml")
-    ids = {load_rule(p).rule_id for p in glob.glob(pattern) if os.path.getsize(p)}
+    ids = {load_rule(p).rule_id for p in glob.glob(pattern)}
 
     assert {"GCP-IAM-001", "GCP-IAM-002"} <= ids
 
@@ -153,16 +153,30 @@ def _put(root, relative, text):
     return path
 
 
-def test_load_rules_repository_rules_directory():
-    # skip_empty: the scaffold still has zero-byte placeholder rule files
-    rules = load_rules(REPO_RULES, skip_empty=True)
+def test_load_rules_repository_rules_directory_strict():
+    rules = load_rules(REPO_RULES)
 
-    assert {"GCP-IAM-001", "GCP-IAM-002"} <= {r.rule_id for r in rules}
+    assert [r.rule_id for r in rules] == ["GCP-IAM-001", "GCP-IAM-002"]
 
 
-def test_load_rules_repository_placeholders_fail_by_default():
-    with pytest.raises(ValueError, match="Failed to load rule file"):
-        load_rules(REPO_RULES)
+def test_repository_has_no_empty_rule_files():
+    empty = [
+        str(p) for p in REPO_RULES.rglob("*")
+        if p.is_file() and p.suffix.lower() in (".yaml", ".yml") and not p.read_text(encoding="utf-8").strip()
+    ]
+
+    assert empty == []
+
+
+@pytest.mark.parametrize("content", ["", "   ", "# only a comment"])
+def test_load_rules_empty_yaml_file_fails(tmp_path, content):
+    _put(tmp_path, "ok.yaml", _rule_yaml("R-1"))
+    empty = _put(tmp_path, "empty.yaml", content)
+
+    with pytest.raises(ValueError, match="Failed to load rule file") as exc:
+        load_rules(tmp_path)
+
+    assert str(empty) in str(exc.value)
 
 
 def test_load_rules_order_is_deterministic_by_relative_path(tmp_path):
@@ -236,16 +250,3 @@ def test_load_rules_invalid_rule_fails_and_names_file(tmp_path, bad_text):
         load_rules(tmp_path)
 
     assert str(bad) in str(exc.value)
-
-
-def test_load_rules_skip_empty_only_skips_blank_files(tmp_path):
-    _put(tmp_path, "placeholder.yaml", "")
-    _put(tmp_path, "blank.yaml", "  \n\n")
-    _put(tmp_path, "real.yaml", _rule_yaml("R-1"))
-    _put(tmp_path, "broken.yaml", "rule_id: [unclosed")
-
-    with pytest.raises(ValueError, match="broken.yaml"):
-        load_rules(tmp_path, skip_empty=True)
-
-    (tmp_path / "broken.yaml").unlink()
-    assert [r.rule_id for r in load_rules(tmp_path, skip_empty=True)] == ["R-1"]

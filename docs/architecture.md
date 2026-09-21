@@ -14,7 +14,7 @@ GCP Project                            (defined: APIs, VPC, subnet)
         |
 IAM + Service Accounts                 (defined: prod-admin, ci-deployer, app-runtime)
         |
-Cloud Audit Logs                       (Admin Activity is platform-default; ingestion planned)
+Cloud Audit Logs                       (Admin Activity default; IAM Data Access defined; ingestion planned)
         |
 CloudShield Normalizer                 (implemented: telemetry/gcp_audit.py)
         |
@@ -73,12 +73,33 @@ project.**
 
 ### Audit logging
 
-- Admin Activity audit logs (IAM policy changes, service account creation,
-  `GenerateAccessToken`/`SignJwt`/... on `iamcredentials.googleapis.com`) are
-  always on and need no configuration, which is why nothing is enabled for them.
-- Data Access audit logs are **not** enabled project-wide (cost and noise). If a
-  later detection needs them, enable them per service with
-  `google_project_iam_audit_config`.
+| Detection | Log type it needs | How it is available |
+|-----------|-------------------|---------------------|
+| GCP-IAM-001 (IAM policy changes) | Admin Activity | Always on; nothing to configure. |
+| GCP-IAM-002 (`GenerateAccessToken`, `GenerateIdToken`, `SignJwt`, `SignBlob` on `iamcredentials.googleapis.com`) | **Data Access** | Off by default. Terraform defines it (see below); not applied yet. |
+
+Service Account Credentials audit events are Data Access logs, not Admin
+Activity. Data Access logging cannot be enabled for
+`iamcredentials.googleapis.com` on its own; Google's documented way is to
+enable it for the IAM API (`iam.googleapis.com`), which also covers the Service
+Account Credentials API. Terraform does this with one
+`google_project_iam_audit_config` for `iam.googleapis.com`:
+
+- `ADMIN_READ`: `GenerateAccessToken` is an ADMIN_READ method.
+- `DATA_READ`: `GenerateIdToken`, `SignJwt` and `SignBlob` are DATA_READ and
+  ADMIN_READ methods.
+- `DATA_WRITE` is not enabled; none of these methods need it.
+- No exempted members.
+
+Consequences:
+
+- Scope is IAM only. Data Access logging is not enabled for all services.
+- Other IAM API read calls (e.g. `GetServiceAccount`) are logged too, which adds
+  some volume and cost.
+- The resource is authoritative for `iam.googleapis.com`: it replaces any log
+  types or exempted members already configured for that service and does not
+  touch other services. Destroying it removes the IAM audit config.
+- Until the config is applied, GCP-IAM-002 has no real telemetry to fire on.
 - VPC Flow Logs are not enabled yet; they arrive with the network detections.
 
 ### Known bootstrap step
