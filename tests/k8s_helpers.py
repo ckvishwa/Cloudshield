@@ -24,14 +24,14 @@ def crb(role_kind="ClusterRole", role_name="cluster-admin", subjects="default", 
 
 def native(verb="create", resource="pods", namespace="payments", name="debug-shell", api_group="", request=None,
            stage="ResponseComplete", code=201, user="developer@example.com", groups=("system:authenticated",),
-           ips=("203.0.113.10",), subresource=None, extra=None):
+           ips=("203.0.113.10",), subresource=None, extra=None, level="Request"):
     ref = {"resource": resource, "apiVersion": "v1"}
     for key, value in (("namespace", namespace), ("name", name), ("subresource", subresource)):
         if value is not None:
             ref[key] = value
     if api_group:
         ref["apiGroup"] = api_group
-    event = {"apiVersion": "audit.k8s.io/v1", "kind": "Event", "auditID": "00000000-0000-4000-8000-000000000001",
+    event = {"apiVersion": "audit.k8s.io/v1", "kind": "Event", "level": level, "auditID": "00000000-0000-4000-8000-000000000001",
              "stage": stage, "verb": verb, "user": {"username": user, "groups": list(groups)},
              "sourceIPs": list(ips), "userAgent": "kubectl/v1.30.0", "objectRef": ref,
              "requestReceivedTimestamp": "2024-08-06T09:00:00.000000Z", "stageTimestamp": "2024-08-06T09:00:01.000000Z"}

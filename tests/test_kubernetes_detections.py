@@ -48,9 +48,10 @@ def test_rules_are_loadable_and_reuse_the_generic_engine():
     assert wl.mitre_attack == "T1610" and rb.mitre_attack == "T1098.006"
 
 
-def test_five_rules_load_strictly_from_the_repository():
+def test_all_rules_load_strictly_from_the_repository():
     assert {r.rule_id for r in load_rules(ROOT / "rules")} == {
-        "GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003", RB, WL}
+        "GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003", RB, WL,
+        "K8S-EXEC-001", "K8S-SECRET-001", "K8S-WORKLOAD-002"}
 
 
 # ---- K8S-WORKLOAD-001 ---------------------------------------------------------------------
@@ -332,11 +333,12 @@ def test_corpus_metrics_are_exact_and_deterministic(dataset, rules):
 
     assert report == second.to_dict()
     assert report["events"] == len(dataset.events)
-    assert report["true_positives"] == report["actual_detections"] == 14
+    assert report["true_positives"] == report["actual_detections"] == 40
     assert (report["false_positives"], report["false_negatives"]) == (0, 0)
-    assert report["true_negatives"] == len(dataset.events) * 2 - 14
-    assert set(report["rules"]) == {WL, RB}
-    assert report["rules"][WL]["true_positives"] == 7 and report["rules"][RB]["true_positives"] == 7
+    assert report["true_negatives"] == len(dataset.events) * 5 - 40
+    assert set(report["rules"]) == {WL, RB, "K8S-EXEC-001", "K8S-SECRET-001", "K8S-WORKLOAD-002"}
+    assert {r: s["true_positives"] for r, s in report["rules"].items()} == {
+        WL: 8, RB: 7, "K8S-EXEC-001": 6, "K8S-SECRET-001": 7, "K8S-WORKLOAD-002": 12}
     assert report["mismatches"] == []
 
 
@@ -386,7 +388,9 @@ def test_both_datasets_dispatch_to_their_own_normalizer(capsys):
     assert "telemetry_type=gcp_audit" in gcp_out and "events processed: 49" in gcp_out
     assert "GCP-IAM-003: TP=7 FP=0 FN=0" in gcp_out and "K8S-" not in gcp_out
     assert "telemetry_type=kubernetes_audit" in k8s_out and "GCP-IAM" not in k8s_out
-    assert "K8S-WORKLOAD-001: TP=7" in k8s_out and "K8S-RBAC-001: TP=7" in k8s_out
+    assert "K8S-WORKLOAD-001: TP=8" in k8s_out and "K8S-RBAC-001: TP=7" in k8s_out
+    assert "K8S-EXEC-001: TP=6" in k8s_out and "K8S-SECRET-001: TP=7" in k8s_out
+    assert "K8S-WORKLOAD-002: TP=12" in k8s_out
 
 
 def test_gcp_corpus_metrics_are_unchanged_by_generalization(rules):

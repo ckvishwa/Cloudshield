@@ -1,0 +1,21 @@
+rule_id: K8S-EXEC-001
+title: Pod Exec Activity
+severity: MEDIUM
+source: kubernetes_audit
+event_type: k8s.pod.exec
+description: >-
+  A principal opened an exec session into a pod (the pods/exec subresource, verb
+  create, get or connect) that succeeded or whose outcome is unknown. Exec is a
+  routine debugging action and is not inherently malicious; this is a notable
+  activity signal that preserves who, where and from which IP, not a claim of
+  compromise. Failed attempts (for example 403) are deliberately not alerted:
+  nothing ran. Only the exec subresource matches; exec is never inferred from
+  strings in request bodies. The command that was run is not in the audit event
+  and is not captured.
+# T1609 (Container Administration Command): exec is the API path for running
+# commands inside a container.
+mitre_attack: T1609
+conditions:
+  - field: attributes.is_exec
+    operator: equals
+    value: true

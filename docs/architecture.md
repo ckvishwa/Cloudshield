@@ -75,13 +75,15 @@ a generic event with `format = None`.
   `groups`, cluster labels, plus `operation_succeeded`. Consumers do not parse
   GKE method names.
 - Event types: `k8s.workload.change` (Pod create/update/patch),
-  `k8s.rbac.binding_change` (ClusterRoleBinding create/update/patch) and
-  `k8s.audit.generic` for everything else, including reads, deletes,
-  subresources and failed writes.
+  `k8s.rbac.binding_change` (ClusterRoleBinding create/update/patch),
+  `k8s.pod.exec` (pods/exec), `k8s.secret.access` (Secret get/list/watch) and
+  `k8s.audit.generic` for everything else, including other reads, deletes,
+  other subresources and failed requests.
 - Stage: native events are actionable only at `ResponseComplete`; one API request
   emits several stages and the others are suppressed to avoid duplicate alerts.
-- Outcome: a native status code outside 2xx, or a non-zero GKE gRPC status,
-  routes the event to generic. A missing status means the outcome is unknown; it
+- Outcome: a native status code outside 2xx (HTTP 101, the normal result of an
+  exec upgrade, counts as success), or a non-zero GKE gRPC status, routes the
+  event to generic. A missing status means the outcome is unknown; it
   is neither confirmed as success nor treated as failure.
 - Security facts are derived in the normalizer, not by the rule engine:
   `has_privileged_container` is true, false (request body inspected) or null
@@ -99,10 +101,62 @@ a generic event with `format = None`.
 - Assumption to verify on real logs: the GKE `protoPayload.request` is the
   Kubernetes object itself. See `datasets/kubernetes_audit/sources.md`.
 
-Rules: K8S-WORKLOAD-001 (privileged Pod) and K8S-RBAC-001 (cluster-admin
-ClusterRoleBinding), both plain YAML on the generic engine. Not covered yet:
-privileged containers inside Deployments and other controllers, namespaced
-RoleBindings to cluster-admin, `pods/exec`, and Secret access.
+Rules (all plain YAML on the generic engine):
+
+| Rule | Severity | Event type | Meaning | ATT&CK |
+|------|----------|------------|---------|--------|
+| K8S-WORKLOAD-001 | HIGH | `k8s.workload.change` | Pod with a privileged container | T1610 |
+| K8S-WORKLOAD-002 | HIGH | `k8s.workload.change` | Pod with hostNetwork/hostPID/hostIPC, a hostPath volume, or added SYS_ADMIN / SYS_PTRACE | T1610 |
+| K8S-RBAC-001 | HIGH | `k8s.rbac.binding_change` | ClusterRoleBinding to `cluster-admin` | T1098.006 |
+| K8S-EXEC-001 | MEDIUM | `k8s.pod.exec` | Successful (or unknown-outcome) pods/exec | T1609 |
+| K8S-SECRET-001 | HIGH | `k8s.secret.access` | Secret get / list / watch | T1552.007 |
+
+Normalized facts added in T-008 (an explicit allowlist; no request or response
+body is copied):
+
+- **Exec:** `is_exec` (pods/exec with verb create, get or connect, core group).
+  The pod is `namespace` / `name`; the command run is not in the audit event and
+  is not captured.
+- **Secret access:** `secret_access_type` (`read` for get, `enumeration` for list,
+  `watch`) and `secret_name`. Secret objects are never copied.
+- **Dangerous workload:** `host_network`, `host_pid`, `host_ipc` (only the
+  boolean true counts), `host_path_volumes` (`{name, path, read_only}`, where
+  `read_only` comes from the volumeMounts that use the volume), `dangerous_capabilities`
+  (upper-cased, `CAP_` stripped, from an explicit set: SYS_ADMIN, SYS_PTRACE),
+  `dangerous_capability_containers`, and the tri-state `has_dangerous_host_config`.
+  containers, initContainers and ephemeralContainers are all inspected.
+
+Decisions and semantics:
+
+- **Failed exec is not alerted.** A denied exec ran nothing. This is a deliberate
+  choice; exec attempts would need a separate rule.
+- **Exec is notable, not malicious.** MEDIUM severity; exec is routine debugging.
+- **All Secret access types are HIGH.** get returns one Secret, list and watch
+  return every Secret they cover, so each exposes Secret contents to the caller.
+  This does not mean a secret was stolen or exfiltrated, and system controllers
+  read Secrets routinely, so expect noise from system identities.
+- **Dangerous host config is a configuration finding.** It does not show a
+  container escape. T1611 (Escape to Host) is what such settings could enable, but
+  no escape is observed, so the rules map to T1610 (Deploy Container).
+- **Unknown is not false.** `has_dangerous_host_config` and
+  `has_privileged_container` are null when the audit level gave no request body,
+  and only true matches.
+
+Limitations:
+
+- Secret access is only visible if the audit policy records Secret requests
+  (Metadata level or higher); pods exec likewise needs the request logged. GKE's
+  default policy and any custom policy decide this; nothing here was checked on a
+  real cluster.
+- Native events are actionable only at `ResponseComplete`. A long-running exec or
+  watch may only be logged at `ResponseStarted` in some setups, and would then be
+  missed until its `ResponseComplete` entry appears.
+- Offline corpus validation does not prove the live GKE telemetry shape.
+- Not covered: privileged or host-level settings inside Deployments and other
+  controllers, namespaced RoleBindings to cluster-admin, `pods/attach` and
+  `pods/portforward`, capabilities other than SYS_ADMIN / SYS_PTRACE (such as
+  `ALL`, NET_ADMIN, SYS_MODULE), Secret volume mounts and env references, and
+  the exec command itself.
 
 ### Offline replay
 

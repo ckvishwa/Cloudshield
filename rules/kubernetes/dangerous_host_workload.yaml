@@ -1,0 +1,23 @@
+rule_id: K8S-WORKLOAD-002
+title: Dangerous Host-Level Workload Configuration
+severity: HIGH
+source: kubernetes_audit
+event_type: k8s.workload.change
+description: >-
+  A Pod was created, updated or patched (successfully, or with an unknown
+  outcome) with a configuration that weakens host isolation: hostNetwork,
+  hostPID or hostIPC set to true, a hostPath volume, or an explicitly added
+  SYS_ADMIN or SYS_PTRACE capability on any container, initContainer or
+  ephemeralContainer. Only the boolean true counts ("true" and 1 do not). This
+  means the workload is configured with a potentially dangerous host-level
+  boundary; it does not show that a container escape happened. Privileged
+  containers are a separate rule (K8S-WORKLOAD-001). Other capabilities (such as
+  ALL, NET_ADMIN or SYS_MODULE) are not covered.
+# T1610 (Deploy Container), as for K8S-WORKLOAD-001: the event is the deployment
+# of a container with weakened isolation. T1611 (Escape to Host) is what these
+# settings could enable, but no escape is observed, so it is not mapped.
+mitre_attack: T1610
+conditions:
+  - field: attributes.has_dangerous_host_config
+    operator: equals
+    value: true

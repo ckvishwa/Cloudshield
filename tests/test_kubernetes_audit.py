@@ -125,7 +125,7 @@ def test_gke_subresource_and_unknown_group_handling():
     exec_call = normalize(gke("io.k8s.core.v1.pods.exec.create", "core/v1/namespaces/payments/pods/debug-shell/exec"))
 
     assert exec_call.attributes["subresource"] == "exec"
-    assert exec_call.event_type == "k8s.audit.generic"
+    assert exec_call.event_type == "k8s.pod.exec" and exec_call.attributes["is_exec"] is True
     other = normalize(gke("io.k8s.widgets.example.v1.gadgets.create", "widgets.example/v1/gadgets/g1")).attributes
     assert other["resource"] == "gadgets" and other["api_group"] == "widgets.example"
 
@@ -186,7 +186,8 @@ def test_verb_normalization_only_accepts_known_kubernetes_verbs(verb, expected):
     assert normalize(native(verb=verb)).attributes["verb"] == expected
 
 
-@pytest.mark.parametrize("code,expected", [(200, True), (201, True), (299, True), (199, False), (300, False),
+@pytest.mark.parametrize("code,expected", [(200, True), (201, True), (299, True), (101, True), (199, False),
+                                           (100, False), (300, False),
                                            (401, False), (403, False), (404, False), (409, False), (500, False),
                                            (None, None)])
 def test_native_status_code_drives_operation_succeeded(code, expected):

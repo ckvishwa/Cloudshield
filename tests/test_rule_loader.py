@@ -158,7 +158,8 @@ def test_load_rules_repository_rules_directory_strict():
     rules = load_rules(REPO_RULES)
 
     assert {r.rule_id for r in rules} == {
-        "GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003", "K8S-RBAC-001", "K8S-WORKLOAD-001"}
+        "GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003", "K8S-RBAC-001", "K8S-WORKLOAD-001",
+        "K8S-EXEC-001", "K8S-SECRET-001", "K8S-WORKLOAD-002"}
     # deterministic: relative-path order, not filesystem order
     paths = sorted(str(p.relative_to(REPO_ROOT_RULES)) .replace(chr(92), "/")
                    for p in REPO_ROOT_RULES.rglob("*.yaml"))

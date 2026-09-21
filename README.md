@@ -9,6 +9,9 @@
 | GCP-IAM-003 | High-Risk Role Present in IAM Policy Update |
 | K8S-WORKLOAD-001 | Privileged Pod Created or Updated |
 | K8S-RBAC-001 | Cluster-Admin ClusterRoleBinding Created or Updated |
+| K8S-WORKLOAD-002 | Dangerous Host-Level Workload Configuration |
+| K8S-EXEC-001 | Pod Exec Activity |
+| K8S-SECRET-001 | Kubernetes Secret Access |
 
 **GCP-IAM-001 vs GCP-IAM-003.** Both look at `SetIamPolicy` audit entries but mean different things:
 
@@ -79,7 +82,7 @@ pipeline; only the normalizer differs.
   Audit Log wrappers** (`protoPayload.serviceName: k8s.io`) both normalize
   through `telemetry/kubernetes_audit.py` into the same stable attributes
   (verb, API group, resource, namespace, name, source IPs, cluster labels).
-- **Two detections**, both plain YAML on the generic engine:
+- **Five detections**, all plain YAML on the generic engine:
   - `K8S-WORKLOAD-001` (HIGH): a Pod create/update/patch where a container,
     initContainer or ephemeralContainer sets `securityContext.privileged: true`.
     `allowPrivilegeEscalation` does not count. If the audit level provides no
@@ -87,10 +90,20 @@ pipeline; only the normalizer differs.
   - `K8S-RBAC-001` (HIGH): a ClusterRoleBinding create/update/patch whose
     `roleRef` is `ClusterRole` / `cluster-admin`. A namespaced RoleBinding is not
     covered.
+  - `K8S-WORKLOAD-002` (HIGH): a Pod create/update/patch with `hostNetwork`,
+    `hostPID` or `hostIPC` set to true, a `hostPath` volume, or an added
+    `SYS_ADMIN` / `SYS_PTRACE` capability in any container, initContainer or
+    ephemeralContainer. It is a configuration finding and does not show a
+    container escape.
+  - `K8S-EXEC-001` (MEDIUM): a successful or unknown-outcome `pods/exec`. Exec is
+    routine debugging, not inherently malicious; a denied exec does not alert.
+  - `K8S-SECRET-001` (HIGH): a Secret `get`, `list` or `watch`. It does not show
+    that a secret was stolen or exfiltrated; only metadata (access type,
+    namespace, name, caller) is kept, never Secret data.
 - Failed writes (non-2xx, or a non-zero GKE status) and the `RequestReceived`
   stage do not produce findings; if a log has no status the outcome is treated
   as unknown, not as confirmed success.
-- **Offline corpus:** `datasets/kubernetes_audit/` holds 51 labeled events.
+- **Offline corpus:** `datasets/kubernetes_audit/` holds 106 labeled events.
   Every one is a `synthetic_variant` derived from Kubernetes and GKE
   documentation; no complete official sample was available to copy, and
   synthetic events are not real telemetry. See `datasets/kubernetes_audit/sources.md`.
@@ -102,8 +115,9 @@ python scripts/replay_dataset.py --dataset datasets/kubernetes_audit --mode inst
 
 **No live GKE validation has been done.** There is no GKE cluster, no
 GKE log backend, and nothing was checked against real GKE audit logs; the GKE
-wrapper shape is inferred from documented query fields. This is a lab
-exercise, not production experience.
+wrapper shape is inferred from documented query fields. Secret access and exec
+visibility also depend on the cluster's audit policy. This is a lab exercise, not
+production experience.
 
 ## GCP Lab Infrastructure
 

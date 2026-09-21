@@ -41,6 +41,12 @@ included.
   populates it for failed Kubernetes calls was not verified.
 - Native events at `Request` level carry `requestObject`; at `Metadata` level
   they do not. That behavior comes from the Kubernetes audit documentation.
+- A `pods/exec` request is modeled as verb `create` (or `get`) on the `exec`
+  subresource with status 101 (Switching Protocols). The GKE method form
+  `io.k8s.core.v1.pods.exec.*` comes from GKE's documented query; the native form and the
+  status code are inferred and were not seen in real logs.
+- Secret get/list/watch events are modeled at `Metadata` level (no bodies). Whether a
+  given cluster's audit policy records them was not checked.
 
 ## Official and public sanitized examples
 
