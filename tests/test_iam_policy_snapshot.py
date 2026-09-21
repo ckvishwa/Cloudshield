@@ -399,7 +399,7 @@ def test_iam_003_requires_the_no_delta_condition():
     assert {"field": "attributes.policy_delta_present", "operator": "equals", "value": False} in conditions
 
 
-def test_repository_rules_load_strictly_as_three_rules():
+def test_repository_rules_include_the_three_iam_rules():
     ids = [r.rule_id for r in load_rules(os.path.join(os.path.dirname(__file__), "..", "rules"))]
 
-    assert sorted(ids) == ["GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003"]
+    assert {"GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003"} <= set(ids)

@@ -1,0 +1,21 @@
+rule_id: K8S-RBAC-001
+title: Cluster-Admin ClusterRoleBinding Created or Updated
+severity: HIGH
+source: kubernetes_audit
+event_type: k8s.rbac.binding_change
+description: >-
+  A ClusterRoleBinding was created, updated or patched (successfully, or with an
+  unknown outcome) whose roleRef is exactly kind ClusterRole, name cluster-admin.
+  A namespaced RoleBinding to cluster-admin has a different scope and is not
+  covered. The request body must be present in the audit log (Request level or
+  higher); without it the roleRef is unknown and nothing matches.
+# T1098.006 (Account Manipulation: Additional Container Cluster Roles): subjects
+# are given a cluster role, here the most privileged one.
+mitre_attack: T1098.006
+conditions:
+  - field: attributes.rbac_role_ref_kind
+    operator: equals
+    value: ClusterRole
+  - field: attributes.rbac_role_ref_name
+    operator: equals
+    value: cluster-admin

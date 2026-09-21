@@ -51,7 +51,7 @@ def _event(event_id="e1", **overrides):
 # ---- corpus loads and is well-formed ------------------------------------------
 
 def test_rules_directory_loads_strictly():
-    assert sorted(r.rule_id for r in load_rules(ROOT / "rules")) == RULE_IDS
+    assert set(RULE_IDS) <= {r.rule_id for r in load_rules(ROOT / "rules")}
 
 
 def test_corpus_loads_with_expected_composition(dataset):
@@ -186,8 +186,9 @@ def test_full_corpus_has_no_mismatches(dataset, rules):
 
 
 def test_full_corpus_metrics_are_exact_and_deterministic(dataset, rules):
-    first = evaluate_dataset(dataset.events, rules).to_dict()
-    second = evaluate_dataset(dataset.events, rules).to_dict()
+    covered = dataset.manifest["rules_covered"]
+    first = evaluate_dataset(dataset.events, rules, score_rules=covered).to_dict()
+    second = evaluate_dataset(dataset.events, rules, score_rules=covered).to_dict()
 
     assert first == second
     assert (first["events"], first["findings"]) == (49, 19)
@@ -247,7 +248,7 @@ def test_cli_rejects_bad_settings(argv, capsys):
 
 
 def test_cli_reports_invalid_dataset(tmp_path, capsys):
-    (tmp_path / "manifest.yaml").write_text("event_counts: {}\n", encoding="utf-8")
+    (tmp_path / "manifest.yaml").write_text("telemetry_type: gcp_audit\nevent_counts: {}\n", encoding="utf-8")
     (tmp_path / "corpus.jsonl").write_text('{"nope": 1}\n', encoding="utf-8")
 
     assert replay_dataset.main(["--dataset", str(tmp_path)]) == 1
@@ -291,15 +292,16 @@ def test_synthetic_provenance_is_required():
         validate_dataset([parent, no_parent, ghost_parent, synthetic_parent, official_with_parent], RULE_IDS)
 
     message = str(exc.value)
-    assert "v1: synthetic_variant must reference parent_event_id" in message
+    assert "v1: synthetic_variant needs parent_event_id or derived_from" in message
     assert "v2: parent_event_id 'ghost' not found" in message
     assert "v3: parent 'v1' must be a non-synthetic example" in message
-    assert "o1: only synthetic_variant events may have a parent_event_id" in message
+    assert "o1: only synthetic_variant events may have a parent_event_id or derived_from" in message
 
 
 def _write_corpus(tmp_path, lines, counts=None):
     (tmp_path / "corpus.jsonl").write_text("".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8")
-    manifest = "event_counts: {}\n" if counts is None else f"event_counts: {json.dumps(counts)}\n"
+    manifest = "telemetry_type: gcp_audit\n"
+    manifest += "event_counts: {}\n" if counts is None else f"event_counts: {json.dumps(counts)}\n"
     (tmp_path / "manifest.yaml").write_text(manifest, encoding="utf-8")
 
 

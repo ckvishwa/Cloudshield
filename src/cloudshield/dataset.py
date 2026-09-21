@@ -4,18 +4,25 @@ Each corpus line is an envelope. CloudShield-only metadata (provenance and
 expected rule IDs) lives beside the raw telemetry, never inside it:
 
     {"event_id", "source_type", "source_reference", "parent_event_id",
-     "expected_rules", "raw", "tags" (optional), "description" (optional)}
+     "expected_rules", "raw", "tags" (optional), "description" (optional),
+     "derived_from" (optional list of documentation URLs)}
+
+A synthetic_variant must name its provenance: a non-synthetic ``parent_event_id``
+in the corpus, and/or ``derived_from`` documentation URLs when no complete
+official event exists to copy (its schema is then derived from documentation).
+The manifest declares ``telemetry_type`` (see cloudshield.telemetry.registry).
 """
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Collection, Dict, List, Mapping, Optional, Tuple, Union
+from typing import Any, Callable, Collection, Dict, List, Mapping, Optional, Tuple, Union
 
 import yaml
 
 from cloudshield.replay import parse_event_timestamp
 from cloudshield.telemetry.file_ingest import load_events
+from cloudshield.telemetry.registry import ADAPTERS, get_adapter
 
 SOURCE_OFFICIAL = "official_example"
 SOURCE_PUBLIC = "public_sanitized_example"
@@ -27,7 +34,7 @@ MANIFEST_FILE = "manifest.yaml"
 TAG_INVALID_TIMESTAMP = "invalid_timestamp"  # the raw timestamp is deliberately malformed
 
 _REQUIRED_KEYS = {"event_id", "source_type", "source_reference", "expected_rules", "raw"}
-_OPTIONAL_KEYS = {"parent_event_id", "tags", "description"}
+_OPTIONAL_KEYS = {"parent_event_id", "tags", "description", "derived_from"}
 
 # Credential-like material that must never appear in a committed corpus.
 _SECRET_PATTERNS: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
@@ -41,6 +48,11 @@ _SECRET_PATTERNS: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
     ("Google API key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
     ("GitHub token", re.compile(r"gh[pousr]_[0-9A-Za-z]{36}")),
     ("AWS access key", re.compile(r"AKIA[0-9A-Z]{16}")),
+    ("Bearer token", re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")),
+    ("kubeconfig credential", re.compile(r"client-(?:certificate|key)-data")),
+    ("Secret stringData", re.compile(r"\bstringData\b")),
+    ("service account token secret", re.compile(r"kubernetes\.io/service-account-token")),
+    ("token field", re.compile(r'"token"\s*:')),
 )
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})")
 _IPV4_RE = re.compile(r"(?<![\d.])(\d{1,3}(?:\.\d{1,3}){3})(?![\d.])")
@@ -62,12 +74,14 @@ class DatasetEvent:
     raw: Dict[str, Any]
     tags: Tuple[str, ...] = ()
     description: str = ""
+    derived_from: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Dataset:
     events: List[DatasetEvent]
     manifest: Dict[str, Any] = field(default_factory=dict)
+    telemetry_type: str = "gcp_audit"
 
 
 def _parse_envelope(obj: Mapping[str, Any], index: int) -> DatasetEvent:
@@ -94,6 +108,9 @@ def _parse_envelope(obj: Mapping[str, Any], index: int) -> DatasetEvent:
     description = obj.get("description", "")
     if not isinstance(description, str):
         raise DatasetValidationError(f"{where}: description must be a string")
+    derived_from = obj.get("derived_from", [])
+    if not isinstance(derived_from, list) or not all(isinstance(u, str) for u in derived_from):
+        raise DatasetValidationError(f"{where}: derived_from must be a list of URL strings")
     if not isinstance(obj["raw"], dict):
         raise DatasetValidationError(f"{where}: raw must be a JSON object")
     return DatasetEvent(
@@ -105,6 +122,7 @@ def _parse_envelope(obj: Mapping[str, Any], index: int) -> DatasetEvent:
         raw=obj["raw"],
         tags=tuple(tags),
         description=description,
+        derived_from=tuple(derived_from),
     )
 
 
@@ -124,10 +142,13 @@ def validate_dataset(
     events: List[DatasetEvent],
     known_rule_ids: Collection[str],
     manifest: Optional[Mapping[str, Any]] = None,
+    timestamp_of: Optional[Callable[[Any], Any]] = None,
 ) -> None:
     """Raise DatasetValidationError listing every data-quality problem found."""
     problems: List[str] = []
     known = set(known_rule_ids)
+    covered = set(manifest.get("rules_covered", [])) if manifest and manifest.get("rules_covered") else None
+    timestamp_of = timestamp_of or (lambda raw: raw.get("timestamp"))
     by_id: Dict[str, DatasetEvent] = {}
     seen_raw: Dict[str, str] = {}
 
@@ -147,8 +168,10 @@ def validate_dataset(
         for rule_id in event.expected_rules:
             if rule_id not in known:
                 problems.append(f"{label}: unknown rule ID {rule_id!r} in expected_rules")
+            elif covered is not None and rule_id not in covered:
+                problems.append(f"{label}: rule {rule_id!r} is not in the manifest's rules_covered")
 
-        raw_timestamp = event.raw.get("timestamp")
+        raw_timestamp = timestamp_of(event.raw)
         if TAG_INVALID_TIMESTAMP in event.tags:
             if raw_timestamp is None or parse_event_timestamp(raw_timestamp) is not None:
                 problems.append(f"{label}: tagged {TAG_INVALID_TIMESTAMP} but the timestamp is not invalid")
@@ -156,20 +179,26 @@ def validate_dataset(
             problems.append(f"{label}: invalid timestamp {raw_timestamp!r}")
 
         text = json.dumps({"raw": event.raw, "source_reference": event.source_reference,
-                           "description": event.description, "tags": list(event.tags)})
+                           "description": event.description, "tags": list(event.tags),
+                           "derived_from": list(event.derived_from)})
         problems.extend(f"{label}: {problem}" for problem in find_sensitive_content(text))
 
     for event in events:
         parent = event.parent_event_id
         if event.source_type == SOURCE_SYNTHETIC:
-            if parent is None:
-                problems.append(f"{event.event_id}: synthetic_variant must reference parent_event_id")
+            if parent is None and not event.derived_from:
+                problems.append(f"{event.event_id}: synthetic_variant needs parent_event_id or derived_from")
+            elif parent is None:
+                pass
             elif parent not in by_id:
                 problems.append(f"{event.event_id}: parent_event_id {parent!r} not found in corpus")
             elif by_id[parent].source_type == SOURCE_SYNTHETIC:
                 problems.append(f"{event.event_id}: parent {parent!r} must be a non-synthetic example")
-        elif parent is not None:
-            problems.append(f"{event.event_id}: only synthetic_variant events may have a parent_event_id")
+        elif parent is not None or event.derived_from:
+            problems.append(f"{event.event_id}: only synthetic_variant events may have a parent_event_id or derived_from")
+        for url in event.derived_from:
+            if not url.startswith("https://"):
+                problems.append(f"{event.event_id}: derived_from entry {url!r} is not an https URL")
 
     if manifest:
         declared = manifest.get("event_counts", {})
@@ -194,7 +223,12 @@ def load_dataset(dataset_dir: Union[str, Path], known_rule_ids: Collection[str])
     if not isinstance(manifest, dict):
         raise DatasetValidationError(f"{manifest_path} must contain a mapping")
 
+    telemetry_type = manifest.get("telemetry_type")
+    if telemetry_type not in ADAPTERS:
+        raise DatasetValidationError(
+            f"{manifest_path}: telemetry_type must be one of {sorted(ADAPTERS)}, got {telemetry_type!r}")
+
     raw_lines = load_events(root / CORPUS_FILE)
     events = [_parse_envelope(obj, index) for index, obj in enumerate(raw_lines, start=1)]
-    validate_dataset(events, known_rule_ids, manifest)
-    return Dataset(events=events, manifest=manifest)
+    validate_dataset(events, known_rule_ids, manifest, get_adapter(telemetry_type).timestamp_of)
+    return Dataset(events=events, manifest=manifest, telemetry_type=telemetry_type)

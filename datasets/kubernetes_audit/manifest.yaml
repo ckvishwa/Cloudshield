@@ -1,0 +1,21 @@
+dataset: kubernetes_audit
+telemetry_type: kubernetes_audit
+schema_version: 1
+description: >-
+  Labeled Kubernetes / GKE audit corpus for offline replay of the CloudShield
+  Kubernetes detections. Provenance and expected labels live in the corpus
+  envelope, never inside the raw telemetry.
+corpus_file: corpus.jsonl
+fictional_project: cloudshield-lab
+rules_covered:
+  - K8S-RBAC-001
+  - K8S-WORKLOAD-001
+# Must match the corpus exactly; loading fails on drift.
+event_counts:
+  official_example: 0
+  public_sanitized_example: 0
+  synthetic_variant: 51
+  total: 51
+notes:
+  - No complete official audit events were available to copy, so every event is a synthetic_variant with derived_from documentation URLs.
+  - Native events follow the Kubernetes audit Event field reference; GKE-wrapped events follow the query fields in Google's GKE audit logging documentation. Neither is real telemetry.

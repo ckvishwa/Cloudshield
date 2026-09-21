@@ -1,4 +1,6 @@
-"""Replay a labeled GCP audit dataset through the CloudShield detections.
+"""Replay a labeled audit dataset (GCP or Kubernetes) through the CloudShield detections.
+
+The dataset manifest's telemetry_type selects the normalizer.
 
 Fully offline: no GCP API calls, no credentials, no network. Default output is
 deterministic; timing is printed only with --benchmark.
@@ -18,6 +20,7 @@ from cloudshield.engine.rule_loader import load_rules
 from cloudshield.evaluation import evaluate_dataset
 from cloudshield.replay import MODE_INSTANT, MODES
 from cloudshield.telemetry.file_ingest import IngestError
+from cloudshield.telemetry.registry import get_adapter
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FICTIONAL_PROJECT = "cloudshield-lab"
@@ -40,7 +43,8 @@ def _fmt(value):
 
 def _parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--dataset", default=str(REPO_ROOT / "datasets" / "gcp_audit"))
+    parser.add_argument("--dataset", default=str(REPO_ROOT / "datasets" / "gcp_audit"),
+                        help="dataset directory (corpus.jsonl + manifest.yaml)")
     parser.add_argument("--mode", choices=MODES, default=MODE_INSTANT)
     parser.add_argument("--speed", type=float, default=1.0, help="accelerated-mode speed multiplier (> 0)")
     parser.add_argument("--max-events", type=int, help="replay only the first N events")
@@ -60,13 +64,15 @@ def main(argv=None):
         dataset = load_dataset(args.dataset, [rule.rule_id for rule in rules])
         events = dataset.events[: args.max_events] if args.max_events else dataset.events
         started = time.perf_counter()
-        report = evaluate_dataset(events, rules, mode=args.mode, speed=args.speed)
+        report = evaluate_dataset(
+            events, rules, mode=args.mode, speed=args.speed, adapter=get_adapter(dataset.telemetry_type),
+            score_rules=dataset.manifest.get("rules_covered") or None)
         elapsed = time.perf_counter() - started
     except (DatasetValidationError, IngestError, ValueError, FileNotFoundError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
-    print(f"dataset: {args.dataset} (mode={args.mode})")
+    print(f"dataset: {args.dataset} (telemetry_type={dataset.telemetry_type}, mode={args.mode})")
     print(f"events processed: {report.events}")
     print(f"findings: {report.findings}")
     print(f"true positives: {report.true_positives}")

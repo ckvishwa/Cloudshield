@@ -136,6 +136,7 @@ from pathlib import Path
 from cloudshield.engine.rule_loader import load_rules
 
 REPO_RULES = Path(__file__).resolve().parent.parent / "rules"
+REPO_ROOT_RULES = REPO_RULES
 
 
 def _rule_yaml(rule_id, event_type="gcp.iam.policy_change"):
@@ -156,9 +157,13 @@ def _put(root, relative, text):
 def test_load_rules_repository_rules_directory_strict():
     rules = load_rules(REPO_RULES)
 
-    assert sorted(r.rule_id for r in rules) == ["GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003"]
-    # stable path order: policy_snapshot_..., privilege_escalation, service_account_...
-    assert [r.rule_id for r in rules] == ["GCP-IAM-003", "GCP-IAM-001", "GCP-IAM-002"]
+    assert {r.rule_id for r in rules} == {
+        "GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003", "K8S-RBAC-001", "K8S-WORKLOAD-001"}
+    # deterministic: relative-path order, not filesystem order
+    paths = sorted(str(p.relative_to(REPO_ROOT_RULES)) .replace(chr(92), "/")
+                   for p in REPO_ROOT_RULES.rglob("*.yaml"))
+    assert len(rules) == len(paths)
+    assert [r.rule_id for r in rules] == [r.rule_id for r in load_rules(REPO_RULES)]
 
 
 def test_repository_has_no_empty_rule_files():

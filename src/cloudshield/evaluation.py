@@ -13,7 +13,7 @@ from cloudshield.dataset import DatasetEvent
 from cloudshield.engine.runner import run_event
 from cloudshield.models import DetectionRule
 from cloudshield.replay import DEFAULT_MAX_SLEEP_SECONDS, MODE_INSTANT, replay
-from cloudshield.telemetry.gcp_audit import normalize_gcp_audit_event
+from cloudshield.telemetry.registry import TelemetryAdapter, get_adapter
 
 _ROUND = 6
 
@@ -143,19 +143,25 @@ def evaluate_dataset(
     speed: float = 1.0,
     max_sleep_seconds: float = DEFAULT_MAX_SLEEP_SECONDS,
     sleep: Callable[[float], None] = time.sleep,
+    adapter: Optional[TelemetryAdapter] = None,
+    score_rules: Optional[Sequence[str]] = None,
 ) -> EvaluationReport:
     """Replay events in order through normalize -> run_event and score the result.
 
     Only ``event.raw`` reaches the normalizer; labels stay out of the pipeline.
+    ``adapter`` selects the telemetry normalizer (default: gcp_audit). Every rule
+    is executed; ``score_rules`` is the rule universe for scoring (default: all
+    rules), and any other rule that fires is still scored, as a false positive.
     """
+    adapter = adapter or get_adapter("gcp_audit")
     outcomes: List[EventOutcome] = []
-    for event in replay(events, lambda e: e.raw.get("timestamp"), mode, speed,
+    for event in replay(events, lambda e: adapter.timestamp_of(e.raw), mode, speed,
                         max_sleep_seconds=max_sleep_seconds, sleep=sleep):
-        findings = run_event(normalize_gcp_audit_event(event.raw), rules)
+        findings = run_event(adapter.normalize(event.raw), rules)
         outcomes.append(EventOutcome(
             event_id=event.event_id,
             expected=frozenset(event.expected_rules),
             actual=frozenset(f.rule_id for f in findings),
             finding_count=len(findings),
         ))
-    return score_outcomes(outcomes, [rule.rule_id for rule in rules])
+    return score_outcomes(outcomes, score_rules if score_rules is not None else [rule.rule_id for rule in rules])

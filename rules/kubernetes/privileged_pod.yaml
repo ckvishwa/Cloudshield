@@ -1,0 +1,23 @@
+rule_id: K8S-WORKLOAD-001
+title: Privileged Pod Created or Updated
+severity: HIGH
+source: kubernetes_audit
+event_type: k8s.workload.change
+description: >-
+  A Pod was created, updated or patched (successfully, or with an unknown
+  outcome) with at least one container that sets securityContext.privileged to
+  true. containers, initContainers and ephemeralContainers are inspected.
+  allowPrivilegeEscalation is a different setting and does not match. The
+  normalizer sets has_privileged_container to true, false (request body
+  inspected, none privileged) or null (no inspectable body, for example a
+  Metadata-level audit event), and only true matches. Failed writes (non-2xx
+  native status, non-zero GKE status) and the RequestReceived stage never reach
+  this event type.
+# T1610 (Deploy Container): a privileged container is deployed into the cluster.
+# It also enables T1611 (Escape to Host); T1610 is used because the event is the
+# deployment itself.
+mitre_attack: T1610
+conditions:
+  - field: attributes.has_privileged_container
+    operator: equals
+    value: true

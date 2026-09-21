@@ -24,30 +24,78 @@ Findings                               (implemented: models.Finding with evidenc
 ```
 
 The Terraform stages are **validated, not deployed**: no GCP resources exist
-and no billing is attached. The last three stages run today against an offline
-corpus (below) and hand-built fixtures. Nothing has been validated against live
+and no billing is attached. The last three stages run today against the offline
+corpora (below) and hand-built fixtures. Nothing has been validated against live
 GCP.
 
 ## Telemetry sources
 
+CloudShield has two telemetry families. Each has its own normalizer and both
+produce the same `NormalizedEvent`, so the rule runner is shared.
+
 ```
-              Telemetry
-            /           \
-   Offline dataset      Cloud Logging API
-   (implemented, used)  (implemented, optional, never run live)
-            \           /
-        normalize_gcp_audit_event()
-                  |
-              Rule runner
-                  |
-               Findings
+                          Telemetry
+              /                                \
+        GCP Audit                       Kubernetes Audit
+        /       \                       /              \
+  offline       Cloud Logging      native           GKE Cloud Audit
+  dataset       API (optional)     audit Event      Log wrapper
+      \            /                   \               /
+    gcp_audit normalizer         kubernetes_audit normalizer
+                  \                     /
+                   NormalizedEvent
+                          |
+                   Generic rule runner
+                          |
+                 Detection-as-code rules
+                          |
+                       Findings
 ```
 
 | Component | Status |
 |-----------|--------|
-| Offline replay (`telemetry/file_ingest.py`, `dataset.py`, `replay.py`, `evaluation.py`, `scripts/replay_dataset.py`, `datasets/gcp_audit/`) | implemented and tested |
-| Cloud Logging API backend (`telemetry/gcp_logging.py`, `scripts/live_validate.py`) | implemented, unit-tested with a mocked client, not required, no live run |
-| Terraform lab (`terraform/`) | validated, not deployed |
+| GCP offline corpus (`datasets/gcp_audit/`) | implemented and tested |
+| Kubernetes / GKE offline corpus (`datasets/kubernetes_audit/`) | implemented and tested (synthetic events, no complete official samples) |
+| Replay pipeline (`telemetry/file_ingest.py`, `dataset.py`, `replay.py`, `evaluation.py`, `telemetry/registry.py`, `scripts/replay_dataset.py`) | implemented and tested; the dataset manifest's `telemetry_type` selects the normalizer |
+| GCP live backend: Cloud Logging API (`telemetry/gcp_logging.py`, `scripts/live_validate.py`) | implemented, unit-tested with a mocked client, not live validated, not required |
+| GKE live backend | **not implemented** |
+| Terraform lab (`terraform/`) | validated, not deployed; no GKE cluster is defined |
+
+### Kubernetes / GKE telemetry
+
+`telemetry/kubernetes_audit.py` normalizes two shapes chosen by explicit shape
+checks (never by a single field): a native `audit.k8s.io` `Event`
+(`apiVersion` starting `audit.k8s.io/`, `kind: Event`) and a GKE Cloud Audit Log
+wrapper (`protoPayload.serviceName == "k8s.io"` and `resource.type ==
+"k8s_cluster"`). Any other input, including an ordinary GCP audit entry, becomes
+a generic event with `format = None`.
+
+- Stable attributes are independent of the input shape: `verb`, `api_group`,
+  `resource`, `subresource`, `namespace`, `name`, `source_ips`, `username`,
+  `groups`, cluster labels, plus `operation_succeeded`. Consumers do not parse
+  GKE method names.
+- Event types: `k8s.workload.change` (Pod create/update/patch),
+  `k8s.rbac.binding_change` (ClusterRoleBinding create/update/patch) and
+  `k8s.audit.generic` for everything else, including reads, deletes,
+  subresources and failed writes.
+- Stage: native events are actionable only at `ResponseComplete`; one API request
+  emits several stages and the others are suppressed to avoid duplicate alerts.
+- Outcome: a native status code outside 2xx, or a non-zero GKE gRPC status,
+  routes the event to generic. A missing status means the outcome is unknown; it
+  is neither confirmed as success nor treated as failure.
+- Security facts are derived in the normalizer, not by the rule engine:
+  `has_privileged_container` is true, false (request body inspected) or null
+  (no inspectable body), and only true matches. `allowPrivilegeEscalation` is
+  not `privileged`. RBAC facts are `rbac_role_ref_kind`, `rbac_role_ref_name`
+  and compact `rbac_subjects`.
+- Response bodies are never read and Secret objects are never copied.
+- Assumption to verify on real logs: the GKE `protoPayload.request` is the
+  Kubernetes object itself. See `datasets/kubernetes_audit/sources.md`.
+
+Rules: K8S-WORKLOAD-001 (privileged Pod) and K8S-RBAC-001 (cluster-admin
+ClusterRoleBinding), both plain YAML on the generic engine. Not covered yet:
+privileged containers inside Deployments and other controllers, namespaced
+RoleBindings to cluster-admin, `pods/exec`, and Secret access.
 
 ### Offline replay
 
@@ -76,7 +124,7 @@ NormalizedEvent -> run_event()/run_events() -> evaluate_rule() per YAML rule -> 
 - Rules are YAML under `rules/`, loaded by `load_rules()` (deterministic order,
   fail-fast on invalid rules or duplicate IDs).
 - The runner only sees `NormalizedEvent`, so new telemetry sources reuse it.
-- Implemented detections: GCP-IAM-001, GCP-IAM-002, GCP-IAM-003.
+- Implemented detections: GCP-IAM-001, GCP-IAM-002, GCP-IAM-003, K8S-WORKLOAD-001, K8S-RBAC-001.
 
 ### Two IAM policy signals
 

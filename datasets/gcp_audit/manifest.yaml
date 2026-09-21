@@ -1,4 +1,5 @@
 dataset: gcp_audit
+telemetry_type: gcp_audit
 schema_version: 1
 description: >-
   Labeled GCP Cloud Audit Log corpus for offline replay of the CloudShield
