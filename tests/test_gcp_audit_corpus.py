@@ -21,7 +21,7 @@ from cloudshield.telemetry.gcp_audit import normalize_gcp_audit_event
 
 ROOT = Path(__file__).resolve().parent.parent
 DATASET_DIR = ROOT / "datasets" / "gcp_audit"
-RULE_IDS = ["GCP-IAM-001", "GCP-IAM-002"]
+RULE_IDS = ["GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003"]
 
 sys.path.insert(0, str(ROOT / "scripts"))
 import replay_dataset  # noqa: E402  (CLI module, imported for its rule binding and main())
@@ -51,14 +51,14 @@ def _event(event_id="e1", **overrides):
 # ---- corpus loads and is well-formed ------------------------------------------
 
 def test_rules_directory_loads_strictly():
-    assert [r.rule_id for r in load_rules(ROOT / "rules")] == RULE_IDS
+    assert sorted(r.rule_id for r in load_rules(ROOT / "rules")) == RULE_IDS
 
 
 def test_corpus_loads_with_expected_composition(dataset):
     counts = Counter(e.source_type for e in dataset.events)
 
     assert len(dataset.events) >= 30
-    assert counts == {"official_example": 8, "synthetic_variant": 27}
+    assert counts == {"official_example": 8, "synthetic_variant": 41}
     assert dataset.manifest["event_counts"]["total"] == len(dataset.events)
 
 
@@ -131,11 +131,58 @@ def test_official_generate_access_token_example_is_not_protected(dataset, rules)
     assert _fired(event, rules) == []
 
 
-def test_documented_false_negative_is_the_only_mismatch(dataset, rules):
-    report = evaluate_dataset(dataset.events, rules)
+def test_former_iam_001_gap_event_is_now_an_iam_003_true_positive(dataset, rules):
+    event = next(e for e in dataset.events if e.event_id == "syn-iam001-gap-owner-without-deltas")
 
-    assert report.mismatches == [{"event_id": "syn-iam001-gap-owner-without-deltas",
-                                  "false_positives": [], "false_negatives": ["GCP-IAM-001"]}]
+    assert event.expected_rules == ("GCP-IAM-003",)
+    assert "formerly_iam001_known_gap" in event.tags and "iam001" not in event.tags
+    assert "No claim is made that roles/owner was newly granted" in event.description
+    assert _fired(event, rules) == ["GCP-IAM-003"]
+
+
+def test_snapshot_corpus_events_behave_as_labeled(dataset, rules):
+    by_id = {e.event_id: e for e in dataset.events}
+    snapshot_tps = [e for e in dataset.events if {"iam003", "true_positive"} <= set(e.tags)]
+
+    assert len(snapshot_tps) == 7  # the relabeled gap event plus six new events
+    for event in snapshot_tps:
+        (finding,) = run_event(normalize_gcp_audit_event(event.raw), rules)
+        assert finding.rule_id == "GCP-IAM-003" and finding.severity == "MEDIUM", event.event_id
+    fallback = normalize_gcp_audit_event(by_id["syn-iam003-tp-request-fallback"].raw)
+    assert fallback.attributes["policy_snapshot_source"] == "request"
+    mixed = run_event(normalize_gcp_audit_event(by_id["syn-iam003-tp-owner-mixed-members"].raw), rules)[0]
+    assert mixed.evidence["matched_bindings"] == [
+        {"role": "roles/owner", "members": ["user:b@example.com", "group:ops@example.com"]}]
+    preferred = normalize_gcp_audit_event(by_id["syn-iam003-neg-response-preferred-over-request"].raw)
+    assert preferred.attributes["roles_present_after"] == ["roles/viewer"]
+
+
+def test_delta_plus_snapshot_event_fires_only_iam_001(dataset, rules):
+    event = next(e for e in dataset.events if e.event_id == "syn-iam003-precedence-delta-and-snapshot")
+
+    assert event.expected_rules == ("GCP-IAM-001",)
+    assert _fired(event, rules) == ["GCP-IAM-001"]
+
+
+def test_unrelated_method_with_bindings_stays_generic(dataset):
+    event = next(e for e in dataset.events if e.event_id == "syn-iam003-neg-unrelated-method-with-bindings")
+
+    assert normalize_gcp_audit_event(event.raw).event_type == "gcp.audit.generic"
+
+
+def test_official_snapshot_examples_are_policy_changes_with_benign_roles(dataset, rules):
+    for event_id in ("off-sa-set-iam-policy-on-sa", "off-project-set-iam-policy"):
+        event = next(e for e in dataset.events if e.event_id == event_id)
+        normalized = normalize_gcp_audit_event(event.raw)
+
+        assert normalized.event_type == "gcp.iam.policy_change"
+        assert normalized.attributes["policy_snapshot_source"] == "response"
+        assert normalized.attributes["policy_delta_present"] is False
+        assert _fired(event, rules) == []
+
+
+def test_full_corpus_has_no_mismatches(dataset, rules):
+    assert evaluate_dataset(dataset.events, rules).mismatches == []
 
 
 def test_full_corpus_metrics_are_exact_and_deterministic(dataset, rules):
@@ -143,13 +190,13 @@ def test_full_corpus_metrics_are_exact_and_deterministic(dataset, rules):
     second = evaluate_dataset(dataset.events, rules).to_dict()
 
     assert first == second
-    assert (first["events"], first["findings"]) == (35, 11)
-    assert (first["true_positives"], first["false_positives"], first["false_negatives"]) == (11, 0, 1)
-    assert first["true_negatives"] == 35 * 2 - 12
-    assert first["precision"] == 1.0
-    assert first["recall"] == round(11 / 12, 6)
-    assert first["rules"]["GCP-IAM-001"]["false_negatives"] == 1
-    assert first["rules"]["GCP-IAM-002"]["true_positives"] == 6
+    assert (first["events"], first["findings"]) == (49, 19)
+    assert (first["true_positives"], first["false_positives"], first["false_negatives"]) == (19, 0, 0)
+    assert first["true_negatives"] == 49 * 3 - 19  # three rules in the evaluation universe
+    assert (first["precision"], first["recall"], first["f1"]) == (1.0, 1.0, 1.0)
+    assert {r: (s["true_positives"], s["false_positives"], s["false_negatives"])
+            for r, s in first["rules"].items()} == {
+        "GCP-IAM-001": (6, 0, 0), "GCP-IAM-002": (6, 0, 0), "GCP-IAM-003": (7, 0, 0)}
 
 
 def test_replay_modes_agree_on_results_and_cap_sleep(dataset, rules):
@@ -181,8 +228,8 @@ def test_cli_writes_a_deterministic_json_report(tmp_path, capsys):
     assert first_stdout == second_stdout
     assert out_a.read_bytes() == out_b.read_bytes()
     report = json.loads(out_a.read_text(encoding="utf-8"))
-    assert report["events"] == 35 and report["true_positives"] == 11
-    assert "events processed: 35" in first_stdout and "false negatives: 1" in first_stdout
+    assert report["events"] == 49 and report["true_positives"] == 19
+    assert "events processed: 49" in first_stdout and "false negatives: 0" in first_stdout
     assert "benchmark" not in first_stdout
 
 

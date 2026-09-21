@@ -1,0 +1,28 @@
+rule_id: GCP-IAM-003
+title: High-Risk Role Present in IAM Policy Update
+severity: MEDIUM
+source: gcp_audit
+event_type: gcp.iam.policy_change
+description: >-
+  A SetIamPolicy call whose resulting policy (response, else request) contains a
+  high-risk role, when the audit entry has no usable binding delta. Without a
+  delta CloudShield cannot tell whether the role was newly granted by this
+  operation or was already present, so this is a lower-confidence signal than
+  GCP-IAM-001 and does not claim a role was granted. It is suppressed whenever a
+  binding delta is present (GCP-IAM-001 covers that case). Keep the role list
+  identical to GCP-IAM-001; a test enforces it.
+# T1098 (Account Manipulation): the policy update may add permissions to an
+# account. Confidence is lower here because the grant itself is not proven.
+mitre_attack: T1098
+conditions:
+  - field: attributes.policy_delta_present
+    operator: equals
+    value: false
+  - field: attributes.roles_present_after
+    operator: contains_any
+    value:
+      - roles/owner
+      - roles/editor
+      - roles/iam.securityAdmin
+      - roles/resourcemanager.projectIamAdmin
+      - roles/iam.serviceAccountAdmin

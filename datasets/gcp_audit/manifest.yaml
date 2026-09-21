@@ -9,13 +9,15 @@ fictional_project: cloudshield-lab
 rules_covered:
   - GCP-IAM-001
   - GCP-IAM-002
+  - GCP-IAM-003
 # Must match the corpus exactly; loading fails on drift.
 event_counts:
   official_example: 8
   public_sanitized_example: 0
-  synthetic_variant: 27
-  total: 35
+  synthetic_variant: 41
+  total: 49
 notes:
   - No public_sanitized_example events are included; none were found that could be reused with clear provenance.
   - Synthetic variants are authored for CloudShield and are not real telemetry.
-  - One event (syn-iam001-gap-owner-without-deltas) is a documented false negative; see README.md.
+  - syn-iam001-gap-owner-without-deltas was first a documented GCP-IAM-001 false negative (a policy snapshot with no
+    bindingDeltas). It is now labeled GCP-IAM-003; see README.md for the history.

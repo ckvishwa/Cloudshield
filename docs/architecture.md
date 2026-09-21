@@ -76,7 +76,35 @@ NormalizedEvent -> run_event()/run_events() -> evaluate_rule() per YAML rule -> 
 - Rules are YAML under `rules/`, loaded by `load_rules()` (deterministic order,
   fail-fast on invalid rules or duplicate IDs).
 - The runner only sees `NormalizedEvent`, so new telemetry sources reuse it.
-- Implemented detections: GCP-IAM-001, GCP-IAM-002.
+- Implemented detections: GCP-IAM-001, GCP-IAM-002, GCP-IAM-003.
+
+### Two IAM policy signals
+
+```
+SetIamPolicy audit entry
+   |-- usable ADD/REMOVE binding delta ----------> roles_added / roles_removed --> GCP-IAM-001 (HIGH)
+   |-- policy snapshot, no usable delta ---------> roles_present_after ----------> GCP-IAM-003 (MEDIUM)
+        (response.bindings, else request.policy.bindings; never merged)
+```
+
+- `roles_added` and `roles_removed` come only from binding deltas, which prove a
+  change. `roles_present_after` comes from a policy snapshot, which only shows
+  what the policy contains afterwards. A snapshot is never used to fill
+  `roles_added`, because a role in the snapshot may have been granted long ago.
+- The normalizer recognizes a policy change from a binding delta, or from a
+  method whose final component is exactly `SetIamPolicy` (case-insensitive, so
+  `SetIAMPolicy` matches; `NotSetIamPolicy` and `SetIamPolicyPreview` do not).
+  A `bindings` field on an unrelated method does not make an event a policy change.
+- `policy_delta_present` is true when at least one well-formed ADD/REMOVE delta
+  exists. GCP-IAM-003 requires it to be false, so an event with a delta is
+  covered only by the higher-confidence GCP-IAM-001 and does not alert twice.
+- Snapshot bindings are reduced to `{role, members}`; malformed bindings are
+  skipped, and etags, conditions and the rest of the response are not copied.
+- Evidence keeps each matched role with only its own members, for both signals.
+
+The two stay separate because they answer different questions. Merging them
+would either label an unproven role "granted" or bury the confirmed grant among
+lower-confidence findings.
 
 ## GCP lab infrastructure (Terraform, `terraform/`)
 
@@ -114,7 +142,7 @@ project.**
 
 | Detection | Log type it needs | How it is available |
 |-----------|-------------------|---------------------|
-| GCP-IAM-001 (IAM policy changes) | Admin Activity | Always on; nothing to configure. |
+| GCP-IAM-001, GCP-IAM-003 (IAM policy changes via `SetIamPolicy`) | Admin Activity | Always on; nothing to configure. |
 | GCP-IAM-002 (`GenerateAccessToken`, `GenerateIdToken`, `SignJwt`, `SignBlob` on `iamcredentials.googleapis.com`) | **Data Access** | Off by default. Terraform defines it (see below); not applied yet. |
 
 Service Account Credentials audit events are Data Access logs, not Admin

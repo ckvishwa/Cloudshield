@@ -6,6 +6,14 @@
 |---------|-------|
 | GCP-IAM-001 | High-Risk IAM Role Granted |
 | GCP-IAM-002 | Suspicious Service Account Credential Generation |
+| GCP-IAM-003 | High-Risk Role Present in IAM Policy Update |
+
+**GCP-IAM-001 vs GCP-IAM-003.** Both look at `SetIamPolicy` audit entries but mean different things:
+
+- **GCP-IAM-001** (HIGH) fires on a high-confidence signal: an `ADD` binding delta for a high-risk role. The role was granted by this call.
+- **GCP-IAM-003** (MEDIUM) fires on a lower-confidence signal: the policy snapshot returned by the call (`response.bindings`, else `request.policy.bindings`) contains a high-risk role and the entry has no usable binding delta. It does not say the role was granted; the role may have been there already.
+
+If an entry has a binding delta, only GCP-IAM-001 can fire, so one change never alerts twice. The two rules keep an identical high-risk role list (a test enforces it).
 
 ## Architecture
 
@@ -35,9 +43,9 @@ GCP audit dataset (JSON / JSONL) -> ingestion -> provenance + expected labels
   -> load_rules() -> run_event() -> findings -> TP / FP / FN evaluation
 ```
 
-- `datasets/gcp_audit/`: a labeled corpus of 35 GCP Cloud Audit Log events:
+- `datasets/gcp_audit/`: a labeled corpus of 49 GCP Cloud Audit Log events:
   8 copied or reformatted from Google's documentation (`official_example`) and
-  27 authored variants (`synthetic_variant`), each tied to a parent example.
+  41 authored variants (`synthetic_variant`), each tied to a parent example.
   Synthetic events are not real telemetry. See `datasets/gcp_audit/sources.md`.
 - `telemetry/file_ingest.py`: bounded, UTF-8 JSON / JSONL loading with line-numbered errors.
 - `dataset.py`: envelope model (provenance and labels kept outside the raw event) and
@@ -52,9 +60,10 @@ python scripts/replay_dataset.py --dataset datasets/gcp_audit --mode instant
 
 These are corpus-specific evaluation results, not production accuracy. The
 corpus was authored together with the rules, so it is a regression and
-coverage check rather than an independent measurement. It contains one
-documented false negative: a `SetIamPolicy` entry that grants `roles/owner`
-but carries no `bindingDeltas`.
+coverage check rather than an independent measurement. Its first version
+exposed a GCP-IAM-001 gap (a `SetIamPolicy` snapshot containing `roles/owner`
+with no `bindingDeltas`); that led to GCP-IAM-003 rather than to weakening
+GCP-IAM-001. See `datasets/gcp_audit/README.md`.
 
 The Cloud Logging API backend is optional and not required for this workflow.
 

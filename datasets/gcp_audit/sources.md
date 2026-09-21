@@ -41,17 +41,22 @@ Event: `off-appengine-set-iam-policy-delta`.
 
 ## Synthetic variants
 
-27 events authored for CloudShield. Each names an official event as its
+41 events authored for CloudShield. Each names an official event as its
 `parent_event_id`, from which its log envelope or field layout is derived. They
 use fictional identifiers only: `example.com` users, the fictional project
 `cloudshield-lab`, and RFC 5737 documentation IPs (`203.0.113.x`).
 
-Two shapes are assumptions rather than observed samples:
+The GCP-IAM-003 snapshot variants use the official project `SetIamPolicy` example
+(`off-project-set-iam-policy`, policy in `response.bindings`) as their parent and
+change only the roles, members and surrounding fields. They are synthetic, not
+official Google events. Shapes that are assumptions rather than observed samples:
 
 - `metadata.bindingDeltas` as an alternative location for IAM binding deltas.
 - A fully qualified iamcredentials method name
   (`google.iam.credentials.v1.IAMCredentials.SignBlob`); the official sample
   uses the bare method name.
+- `request.policy.bindings` as a fallback snapshot location on `SetIamPolicy`
+  (the official samples only show the policy in `response`).
 
 ## Public sanitized examples
 

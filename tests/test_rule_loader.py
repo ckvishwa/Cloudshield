@@ -156,7 +156,9 @@ def _put(root, relative, text):
 def test_load_rules_repository_rules_directory_strict():
     rules = load_rules(REPO_RULES)
 
-    assert [r.rule_id for r in rules] == ["GCP-IAM-001", "GCP-IAM-002"]
+    assert sorted(r.rule_id for r in rules) == ["GCP-IAM-001", "GCP-IAM-002", "GCP-IAM-003"]
+    # stable path order: policy_snapshot_..., privilege_escalation, service_account_...
+    assert [r.rule_id for r in rules] == ["GCP-IAM-003", "GCP-IAM-001", "GCP-IAM-002"]
 
 
 def test_repository_has_no_empty_rule_files():

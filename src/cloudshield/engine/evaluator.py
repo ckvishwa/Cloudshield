@@ -56,13 +56,24 @@ def _match_condition(operator: str, actual_val: Any, value: Any) -> Optional[Lis
     return matched if all(v in actual_val for v in value) else None
 
 
+# Role-list field -> the attribute holding the bindings behind those roles, so
+# evidence keeps each matched role with its own member(s) and nothing else.
+_BINDING_SOURCES = {
+    "attributes.roles_added": "bindings_added",                # {role, member}: proven ADD deltas
+    "attributes.roles_present_after": "bindings_present_after",  # {role, members}: policy snapshot
+}
+
+
 def _matched_bindings(event: NormalizedEvent, matched_values: Dict[str, List[Any]]) -> List[Dict[str, Any]]:
-    """Bindings (role + member) behind matched roles, so each role keeps its own member."""
-    roles = set(matched_values.get("attributes.roles_added", []))
-    bindings = event.attributes.get("bindings_added")
-    if not roles or not isinstance(bindings, list):
-        return []
-    return [b for b in bindings if isinstance(b, dict) and b.get("role") in roles]
+    """Bindings (role + member[s]) behind the matched roles."""
+    matched: List[Dict[str, Any]] = []
+    for field_path, attribute in _BINDING_SOURCES.items():
+        roles = set(matched_values.get(field_path, []))
+        bindings = event.attributes.get(attribute)
+        if not roles or not isinstance(bindings, list):
+            continue
+        matched.extend(b for b in bindings if isinstance(b, dict) and b.get("role") in roles)
+    return matched
 
 
 def evaluate_rule(rule: DetectionRule, event: NormalizedEvent) -> Optional[Finding]:

@@ -83,6 +83,102 @@ def _delegation_chain(auth_info: Dict[str, Any]) -> List[str]:
     return chain
 
 
+def _is_set_iam_policy(method_name: Optional[str]) -> bool:
+    """True when the final dot-separated component is exactly SetIamPolicy.
+
+    Case-insensitive so 'SetIAMPolicy' (IAM admin API) matches, but exact on the
+    final component, so 'NotSetIamPolicy' or 'SetIamPolicyPreview' do not.
+    """
+    if not method_name:
+        return False
+    return method_name.rsplit(".", 1)[-1].casefold() == "setiampolicy"
+
+
+def _parse_binding_deltas(binding_deltas: List[Any]) -> Dict[str, Any]:
+    """Roles proven added/removed by well-formed ADD/REMOVE binding deltas."""
+    roles_added: List[str] = []
+    roles_removed: List[str] = []
+    bindings_added: List[Dict[str, Optional[str]]] = []
+    usable = 0
+    for delta in binding_deltas:
+        if not isinstance(delta, dict):
+            continue
+        action = delta.get("action")
+        role = _as_str(delta.get("role"))
+        if role is None:
+            continue
+        if action == "ADD":
+            roles_added.append(role)
+            bindings_added.append({"role": role, "member": _as_str(delta.get("member"))})
+            usable += 1
+        elif action == "REMOVE":
+            roles_removed.append(role)
+            usable += 1
+    return {
+        "roles_added": roles_added,
+        "roles_removed": roles_removed,
+        "bindings_added": bindings_added,
+        "policy_delta_present": usable > 0,
+    }
+
+
+def _extract_bindings(candidate: Any) -> Optional[List[Dict[str, Any]]]:
+    """Compact {role, members} list from a policy 'bindings' value.
+
+    None when candidate is not a list (source unusable). Malformed bindings are
+    skipped: role must be a non-empty string and members a list holding at
+    least one string (non-string members are dropped).
+    """
+    if not isinstance(candidate, list):
+        return None
+    bindings: List[Dict[str, Any]] = []
+    for binding in candidate:
+        if not isinstance(binding, dict):
+            continue
+        role = _as_str(binding.get("role"))
+        members = binding.get("members")
+        if role is None or not isinstance(members, list):
+            continue
+        member_strings = [m for m in members if isinstance(m, str) and m]
+        if member_strings:
+            bindings.append({"role": role, "members": member_strings})
+    return bindings
+
+
+def _policy_snapshot(proto_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Resulting policy of a SetIamPolicy call: response.bindings, else request.policy.bindings.
+
+    Exactly one source is used (never merged). The response is preferred because
+    it is the policy as returned after the operation.
+    """
+    source: Optional[str] = None
+    bindings = _extract_bindings(_as_dict(proto_payload.get("response")).get("bindings"))
+    if bindings is not None:
+        source = "response"
+    else:
+        policy = _as_dict(_as_dict(proto_payload.get("request")).get("policy"))
+        bindings = _extract_bindings(policy.get("bindings"))
+        if bindings is not None:
+            source = "request"
+    bindings = bindings or []
+    return {
+        "policy_snapshot_source": source,
+        "roles_present_after": list(dict.fromkeys(b["role"] for b in bindings)),
+        "bindings_present_after": bindings,
+    }
+
+
+def _policy_change_attributes(proto_payload: Dict[str, Any], binding_deltas: List[Any]) -> Dict[str, Any]:
+    """Attributes for gcp.iam.policy_change.
+
+    roles_added / roles_removed come ONLY from binding deltas (proven changes).
+    roles_present_after comes from a policy snapshot and never implies a grant.
+    """
+    attributes = _parse_binding_deltas(binding_deltas)
+    attributes.update(_policy_snapshot(proto_payload))
+    return attributes
+
+
 def _credential_generation_attributes(
     raw: Dict[str, Any], proto_payload: Dict[str, Any], auth_info: Dict[str, Any],
     principal: Optional[str],
@@ -131,27 +227,11 @@ def normalize_gcp_audit_event(raw: Dict[str, Any]) -> NormalizedEvent:
         event_type = "gcp.iam.service_account_credential_generation"
         attributes.update(credential_attributes)
 
-    binding_deltas = _collect_binding_deltas(proto_payload)
-    if binding_deltas and credential_attributes is None:
-        event_type = "gcp.iam.policy_change"
-        roles_added: List[str] = []
-        roles_removed: List[str] = []
-        bindings_added: List[Dict[str, Optional[str]]] = []
-        for delta in binding_deltas:
-            if not isinstance(delta, dict):
-                continue
-            action = delta.get("action")
-            role = _as_str(delta.get("role"))
-            if role is None:
-                continue
-            if action == "ADD":
-                roles_added.append(role)
-                bindings_added.append({"role": role, "member": _as_str(delta.get("member"))})
-            elif action == "REMOVE":
-                roles_removed.append(role)
-        attributes["roles_added"] = roles_added
-        attributes["roles_removed"] = roles_removed
-        attributes["bindings_added"] = bindings_added
+    if credential_attributes is None:
+        binding_deltas = _collect_binding_deltas(proto_payload)
+        if binding_deltas or _is_set_iam_policy(attributes["method_name"]):
+            event_type = "gcp.iam.policy_change"
+            attributes.update(_policy_change_attributes(proto_payload, binding_deltas))
 
     return NormalizedEvent(
         source="gcp_audit",
