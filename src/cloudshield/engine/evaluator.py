@@ -1,3 +1,4 @@
+import copy
 from typing import Any, Dict, List, Optional
 from cloudshield.models import DetectionRule, NormalizedEvent, Finding
 
@@ -84,13 +85,15 @@ def evaluate_rule(rule: DetectionRule, event: NormalizedEvent) -> Optional[Findi
             return None
         matched_values[field] = matched
 
+    # Findings own their evidence: deep copies keep the event and rule
+    # immutable even if a consumer later edits a Finding.
     evidence: Dict[str, Any] = {
-        "event_attributes": event.attributes,
-        "matched_conditions": rule.conditions,
+        "event_attributes": copy.deepcopy(event.attributes),
+        "matched_conditions": copy.deepcopy(rule.conditions),
     }
     bindings = _matched_bindings(event, matched_values)
     if bindings:
-        evidence["matched_bindings"] = bindings
+        evidence["matched_bindings"] = copy.deepcopy(bindings)
 
     return Finding(
         rule_id=rule.rule_id,
@@ -103,5 +106,5 @@ def evaluate_rule(rule: DetectionRule, event: NormalizedEvent) -> Optional[Findi
         timestamp=event.timestamp,
         method_name=event.attributes.get("method_name"),
         source_ip=event.attributes.get("source_ip"),
-        matched_values=matched_values,
+        matched_values=copy.deepcopy(matched_values),
     )

@@ -1,5 +1,8 @@
+from pathlib import Path
+from typing import Any, Dict, List, Union
+
 import yaml
-from typing import Any, List
+
 from cloudshield.engine.evaluator import SUPPORTED_OPERATORS
 from cloudshield.models import DetectionRule
 
@@ -50,7 +53,10 @@ def load_rule(path: str) -> DetectionRule:
     if not isinstance(data["conditions"], list):
         raise ValueError("Rule 'conditions' must be a list")
 
-    validate_conditions(str(data["rule_id"]), data["conditions"])
+    if not isinstance(data["rule_id"], str) or not data["rule_id"].strip():
+        raise ValueError(f"Rule 'rule_id' must be a non-empty string, got {data['rule_id']!r}")
+
+    validate_conditions(data["rule_id"], data["conditions"])
 
     return DetectionRule(
         rule_id=data["rule_id"],
@@ -62,3 +68,46 @@ def load_rule(path: str) -> DetectionRule:
         description=data.get("description"),
         mitre_attack=data.get("mitre_attack"),
     )
+
+
+RULE_SUFFIXES = (".yaml", ".yml")
+
+
+def _discover_rule_files(root: Path) -> List[Path]:
+    """Rule files under root, sorted by relative POSIX path (never by fs order)."""
+    files = [p for p in root.rglob("*") if p.is_file() and p.suffix.lower() in RULE_SUFFIXES]
+    return sorted(files, key=lambda p: p.relative_to(root).as_posix())
+
+
+def load_rules(rule_root: Union[str, Path], skip_empty: bool = False) -> List[DetectionRule]:
+    """Load every *.yaml / *.yml rule under rule_root, recursively.
+
+    Fail-fast: an unreadable or invalid rule file, or a duplicate rule ID
+    (compared case-insensitively), raises ValueError naming the file(s).
+    Nothing is skipped silently. A missing or non-directory root also raises,
+    so a mistyped path cannot look like "no detections".
+
+    Zero-byte / whitespace-only files are errors unless skip_empty=True, which
+    exists only for scaffold placeholder files that do not yet hold a rule.
+    """
+    root = Path(rule_root)
+    if not root.is_dir():
+        raise ValueError(f"Rule root is not a directory: {root}")
+
+    rules: List[DetectionRule] = []
+    seen: Dict[str, Path] = {}
+    for path in _discover_rule_files(root):
+        if skip_empty and not path.read_text(encoding="utf-8").strip():
+            continue
+        try:
+            rule = load_rule(str(path))
+        except (ValueError, yaml.YAMLError) as exc:
+            raise ValueError(f"Failed to load rule file {path}: {exc}") from exc
+        key = rule.rule_id.casefold()
+        if key in seen:
+            raise ValueError(
+                f"Duplicate rule_id {rule.rule_id!r}: defined in {seen[key]} and again in {path}"
+            )
+        seen[key] = path
+        rules.append(rule)
+    return rules
