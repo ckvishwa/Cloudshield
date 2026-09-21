@@ -1,0 +1,16 @@
+rule_id: GCP-IAM-001
+title: High-Risk IAM Role Granted
+severity: HIGH
+source: gcp_audit
+event_type: gcp.iam.policy_change
+description: Identifies assignment of highly privileged GCP IAM roles.
+mitre_attack: T1098
+conditions:
+  - field: attributes.roles_added
+    operator: contains_any
+    value:
+      - roles/owner
+      - roles/editor
+      - roles/iam.securityAdmin
+      - roles/resourcemanager.projectIamAdmin
+      - roles/iam.serviceAccountAdmin
