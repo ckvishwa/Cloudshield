@@ -10,3 +10,10 @@ venv/
 .terraform/
 *-key.json
 temp.py
+crash.log
+crash.*.log
+terraform.tfvars
+*.auto.tfvars
+*.tfplan
+
+# Terraform: DO commit .terraform.lock.hcl (reproducible provider selection)

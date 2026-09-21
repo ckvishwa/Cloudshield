@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars (git-ignored) and replace the placeholders.
+# Never commit real project IDs, credentials or keys.
+
+project_id = "your-gcp-project-id"
+region     = "us-central1"
+zone       = "us-central1-a"
+
+# Optional: identities allowed to generate short-lived tokens for the protected
+# prod-admin service account (to produce GCP-IAM-002 telemetry). Scoped to that
+# single service account. Leave empty to grant nobody.
+# impersonation_test_principals = ["user:you@example.com"]
+impersonation_test_principals = []
