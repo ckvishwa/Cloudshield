@@ -18,17 +18,35 @@ def _resolve_field(event: NormalizedEvent, field_path: str) -> Any:
             return None
     return current
 
-SUPPORTED_OPERATORS = ("equals", "contains_any", "contains_all")
+# Operator semantics (rule value -> event value):
+#   equals        event value == rule value
+#   in            scalar event value is one of the rule's list
+#   not_in        scalar event value is present and NOT in the rule's list;
+#                 a missing (None) event value never matches, so absent
+#                 identity data is not treated as suspicious
+#   contains_any  list event value shares at least one item with the rule's list
+#   contains_all  list event value contains every item of the rule's list
+SUPPORTED_OPERATORS = ("equals", "in", "not_in", "contains_any", "contains_all")
+
+
+def _is_scalar(value: Any) -> bool:
+    return value is not None and not isinstance(value, (list, dict, set, tuple))
 
 
 def _match_condition(operator: str, actual_val: Any, value: Any) -> Optional[List[Any]]:
     """Return the event values that satisfied the condition, or None if it failed."""
     if operator == "equals":
         return [actual_val] if actual_val == value else None
-    if operator not in ("contains_any", "contains_all"):
+    if operator not in ("in", "not_in", "contains_any", "contains_all"):
         raise ValueError(f"Unknown operator: {operator}")
     if not isinstance(value, list):
         raise ValueError(f"'{operator}' requires a list value in the rule condition")
+    if operator in ("in", "not_in"):
+        if not _is_scalar(actual_val):
+            return None
+        if operator == "in":
+            return [actual_val] if actual_val in value else None
+        return [actual_val] if actual_val not in value else None
     if not isinstance(actual_val, list):
         return None
     matched = [v for v in dict.fromkeys(actual_val) if v in value]

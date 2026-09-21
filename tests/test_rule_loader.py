@@ -102,3 +102,28 @@ def test_valid_supported_operators_load(tmp_path):
     value: someone@example.com
 """)
     assert len(load_rule(path).conditions) == 3
+
+
+@pytest.mark.parametrize("operator", ["in", "not_in"])
+def test_membership_operators_load_with_list_value(tmp_path, operator):
+    path = _write(tmp_path, f"conditions:\n  - field: principal\n    operator: {operator}\n    value: [a@example.com]\n")
+
+    assert load_rule(path).conditions[0]["operator"] == operator
+
+
+@pytest.mark.parametrize("operator", ["in", "not_in"])
+@pytest.mark.parametrize("value_yaml", ["a@example.com", "[]"])
+def test_membership_operators_reject_scalar_or_empty_value(tmp_path, operator, value_yaml):
+    path = _write(tmp_path, f"conditions:\n  - field: principal\n    operator: {operator}\n    value: {value_yaml}\n")
+
+    with pytest.raises(ValueError, match="non-empty list"):
+        load_rule(path)
+
+
+def test_shipped_iam_rules_load():
+    import glob
+    import os
+    pattern = os.path.join(os.path.dirname(__file__), "..", "rules", "iam", "*.yaml")
+    ids = {load_rule(p).rule_id for p in glob.glob(pattern) if os.path.getsize(p)}
+
+    assert {"GCP-IAM-001", "GCP-IAM-002"} <= ids
