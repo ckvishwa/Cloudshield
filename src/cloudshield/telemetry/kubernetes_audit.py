@@ -26,6 +26,10 @@ Documented assumptions (kept deliberately small):
   has no status the outcome is unknown (``operation_succeeded = None``) and is not
   treated as a failure or as a confirmed success.
 * Response bodies are never read and Secret objects are never copied.
+* The raw event is input only. The returned NormalizedEvent never retains it
+  (``raw`` is always ``{}``): request and response bodies can carry Secret data,
+  tokens or other user-supplied content, and the detection engine only needs the
+  minimal facts extracted into ``attributes``.
 """
 import re
 from typing import Any, Dict, List, Optional
@@ -302,7 +306,7 @@ def normalize_kubernetes_audit_event(raw: Any) -> NormalizedEvent:
     attributes = _empty_attributes()
     if detected is None:
         return NormalizedEvent(source=SOURCE, event_type=EVENT_GENERIC, timestamp=None, principal=None,
-                               resource=None, attributes=attributes, raw=raw if isinstance(raw, dict) else {})
+                               resource=None, attributes=attributes, raw={})
 
     fields = _native_fields(raw) if detected == FORMAT_NATIVE else _gke_fields(raw)
     body = fields.pop("request")
@@ -335,5 +339,5 @@ def normalize_kubernetes_audit_event(raw: Any) -> NormalizedEvent:
         principal=principal,
         resource=_resource_path(attributes),
         attributes=attributes,
-        raw=raw,
+        raw={},
     )

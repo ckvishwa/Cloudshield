@@ -289,3 +289,126 @@ def test_registry_dispatches_by_type_and_rejects_unknown_types():
     for bad in ("kubernetes", "", None, "GCP_AUDIT"):
         with pytest.raises(ValueError, match="Unknown telemetry_type"):
             get_adapter(bad)
+
+
+# ---- raw telemetry is input-only (Secret-bearing events) ---------------------------------------------
+
+FAKE_SECRET_VALUE = "FAKE-SECRET-VALUE-do-not-use"
+FAKE_TOKEN_VALUE = "FAKE-TOKEN-VALUE-do-not-use"
+FAKE_KEY_VALUE = "FAKE-PRIVATE-KEY-MATERIAL-do-not-use"
+SENTINELS = (FAKE_SECRET_VALUE, FAKE_TOKEN_VALUE, FAKE_KEY_VALUE, "ZmFrZS1zZWNyZXQ=")
+
+
+def _secret(**fields):
+    return {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "db-credentials", "namespace": "payments"},
+            "type": "Opaque", **fields}
+
+
+def _everything(event):
+    """All text reachable from a NormalizedEvent, including raw."""
+    return json.dumps({"source": event.source, "type": event.event_type, "timestamp": event.timestamp,
+                       "principal": event.principal, "resource": event.resource, "attributes": event.attributes,
+                       "raw": event.raw}, default=str)
+
+
+def _assert_no_sentinels(event):
+    text = _everything(event)
+    for sentinel in SENTINELS:
+        assert sentinel not in text, sentinel
+
+
+def test_native_secret_data_is_not_retained():
+    body = _secret(data={"password": "ZmFrZS1zZWNyZXQ="})
+    raw = native(resource="secrets", name="db-credentials", request=body,
+                 extra={"responseObject": _secret(data={"password": "ZmFrZS1zZWNyZXQ="})})
+    event = normalize(raw)
+
+    _assert_no_sentinels(event)
+    assert event.attributes["request_object"] is None
+    assert event.attributes["name"] == "db-credentials" and event.attributes["namespace"] == "payments"
+
+
+def test_native_secret_string_data_is_not_retained():
+    raw = native(resource="secrets", name="db-credentials", request=_secret(stringData={"password": FAKE_SECRET_VALUE}),
+                 extra={"responseObject": _secret(stringData={"password": FAKE_SECRET_VALUE})})
+
+    _assert_no_sentinels(normalize(raw))
+
+
+def test_gke_secret_data_is_not_retained():
+    request = _secret(data={"password": "ZmFrZS1zZWNyZXQ="})
+    event = normalize(gke("io.k8s.core.v1.secrets.create", "core/v1/namespaces/payments/secrets/db-credentials",
+                          request=request))
+
+    _assert_no_sentinels(event)
+    assert event.attributes["request_object"] is None and event.attributes["resource"] == "secrets"
+
+
+def test_gke_secret_string_data_is_not_retained():
+    request = _secret(stringData={"password": FAKE_SECRET_VALUE})
+    event = normalize(gke("io.k8s.core.v1.secrets.update", "core/v1/namespaces/payments/secrets/db-credentials",
+                          request=request))
+
+    _assert_no_sentinels(event)
+
+
+def test_tokens_and_keys_in_any_part_of_the_raw_event_are_not_retained():
+    raw = native(request=pod(), extra={
+        "annotations": {"note": FAKE_TOKEN_VALUE},
+        "responseObject": {"kind": "Pod", "status": {"token": FAKE_TOKEN_VALUE}},
+        "requestObject": {**pod(), "metadata": {"name": "debug-shell", "namespace": "payments",
+                                                "annotations": {"key": FAKE_KEY_VALUE, "bearer": FAKE_TOKEN_VALUE}}},
+        "userAgent": "kubectl/v1.30.0"})
+    gke_raw = gke(request={**pod(), "spec": {"containers": [{"name": "debug-shell", "env": [
+        {"name": "PRIVATE_KEY", "value": FAKE_KEY_VALUE}], "securityContext": {"privileged": True}}]}},
+        status={"code": 0, "message": FAKE_TOKEN_VALUE})
+
+    for candidate in (raw, gke_raw):
+        _assert_no_sentinels(normalize(candidate))
+
+
+@pytest.mark.parametrize("raw", [
+    native(request=pod()), gke(request=pod()), native(request=crb(), **CRB),
+    native(resource="secrets", name="s", request=_secret(data={"k": FAKE_SECRET_VALUE})),
+    {}, {"protoPayload": {"serviceName": "iam.googleapis.com"}, "resource": {"type": "project"}},
+    "text", None, [1, 2], native(extra={"objectRef": "junk"}),
+])
+def test_normalized_event_never_retains_the_original_object(raw):
+    event = normalize(raw)
+
+    assert event.raw == {}
+    assert event.raw is not raw
+
+
+def test_normalized_event_keeps_useful_forensic_fields_without_raw():
+    event = normalize(gke(request=pod(containers=[{"name": "agent", "securityContext": {"privileged": True}}]),
+                          labels={"project_id": "cloudshield-lab", "cluster_name": "lab-cluster",
+                                  "location": "us-central1"}))
+    a = event.attributes
+
+    assert event.principal == "developer@example.com" and event.event_type == "k8s.workload.change"
+    assert event.timestamp and event.resource == "namespaces/payments/pods/debug-shell"
+    assert (a["verb"], a["api_group"], a["api_version"], a["namespace"], a["name"], a["subresource"]) == \
+        ("create", "", "v1", "payments", "debug-shell", None)
+    assert a["source_ips"] == ["203.0.113.10"] and a["user_agent"] == "kubectl/v1.30.0"
+    assert (a["cluster_name"], a["cluster_location"], a["project_id"]) == ("lab-cluster", "us-central1", "cloudshield-lab")
+    assert a["privileged_containers"] == ["agent"] and a["operation_succeeded"] is None
+    native_attrs = normalize(native(request=crb(), **CRB)).attributes
+    assert native_attrs["stage"] == "ResponseComplete" and native_attrs["status_code"] == 201
+    assert native_attrs["rbac_role_ref_name"] == "cluster-admin"
+    assert native_attrs["rbac_subjects"] == [{"kind": "User", "name": "developer@example.com"}]
+    assert native_attrs["request_object"] == {"kind": "ClusterRoleBinding", "apiVersion": None,
+                                              "name": "dev-cluster-admin", "namespace": None}
+
+
+def test_findings_never_carry_raw_telemetry():
+    from cloudshield.engine.evaluator import evaluate_rule
+    from cloudshield.engine.rule_loader import load_rule
+    import os
+
+    rule = load_rule(os.path.join(os.path.dirname(__file__), "..", "rules", "kubernetes", "privileged_pod.yaml"))
+    raw = native(request=pod(), extra={"responseObject": {"leak": FAKE_TOKEN_VALUE}})
+    finding = evaluate_rule(rule, normalize(raw))
+
+    assert finding is not None
+    assert FAKE_TOKEN_VALUE not in json.dumps(finding.evidence, default=str)

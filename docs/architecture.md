@@ -89,6 +89,13 @@ a generic event with `format = None`.
   not `privileged`. RBAC facts are `rbac_role_ref_kind`, `rbac_role_ref_name`
   and compact `rbac_subjects`.
 - Response bodies are never read and Secret objects are never copied.
+- **Raw telemetry is input-only.** `NormalizedEvent.raw` is always `{}` for
+  Kubernetes telemetry. The adapter extracts only the minimal facts detections
+  need into `attributes`, and the detection engine and findings never see the
+  original event. Request and response bodies can carry Secret `data` /
+  `stringData`, tokens or other user-supplied content, so they are not retained
+  or "redacted after the fact"; they are simply not kept. This matters most for
+  Secret-bearing events.
 - Assumption to verify on real logs: the GKE `protoPayload.request` is the
   Kubernetes object itself. See `datasets/kubernetes_audit/sources.md`.
 
@@ -124,6 +131,7 @@ NormalizedEvent -> run_event()/run_events() -> evaluate_rule() per YAML rule -> 
 - Rules are YAML under `rules/`, loaded by `load_rules()` (deterministic order,
   fail-fast on invalid rules or duplicate IDs).
 - The runner only sees `NormalizedEvent`, so new telemetry sources reuse it.
+- Telemetry adapters are the sanitization boundary: they extract the facts a detection needs and drop the rest. The Kubernetes adapter does not retain the raw event at all; the GCP audit adapter still attaches its input as `NormalizedEvent.raw`. That is a known gap, not a design choice; its offline corpus is synthetic or official-doc content and the optional Cloud Logging adapter already whitelists fields before normalization.
 - Implemented detections: GCP-IAM-001, GCP-IAM-002, GCP-IAM-003, K8S-WORKLOAD-001, K8S-RBAC-001.
 
 ### Two IAM policy signals
