@@ -1,61 +1,68 @@
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from cloudshield.models import NormalizedEvent
 
+
+def _as_dict(value: Any) -> Dict[str, Any]:
+    return value if isinstance(value, dict) else {}
+
+
+def _as_str(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
+
+
+def _collect_binding_deltas(proto_payload: Dict[str, Any]) -> List[Any]:
+    deltas: List[Any] = []
+    metadata = _as_dict(proto_payload.get("metadata"))
+    policy_delta = _as_dict(_as_dict(proto_payload.get("serviceData")).get("policyDelta"))
+    for candidate in (metadata.get("bindingDeltas"), policy_delta.get("bindingDeltas")):
+        if isinstance(candidate, list):
+            deltas.extend(candidate)
+    return deltas
+
+
 def normalize_gcp_audit_event(raw: Dict[str, Any]) -> NormalizedEvent:
-    proto_payload = raw.get("protoPayload", {})
-    if not isinstance(proto_payload, dict):
-        proto_payload = {}
-        
-    auth_info = proto_payload.get("authenticationInfo", {})
-    if not isinstance(auth_info, dict):
-        auth_info = {}
-        
-    principal = auth_info.get("principalEmail", "unknown")
-    resource = proto_payload.get("resourceName", "unknown")
-    timestamp = raw.get("timestamp", "unknown")
+    """Normalize a raw GCP audit log entry.
 
+    Absent optional values are None, never fabricated placeholders.
+    """
+    proto_payload = _as_dict(raw.get("protoPayload"))
+    auth_info = _as_dict(proto_payload.get("authenticationInfo"))
+    request_metadata = _as_dict(proto_payload.get("requestMetadata"))
+
+    attributes: Dict[str, Any] = {
+        "method_name": _as_str(proto_payload.get("methodName")),
+        "source_ip": _as_str(request_metadata.get("callerIp")),
+    }
     event_type = "gcp.audit.generic"
-    attributes: Dict[str, Any] = {}
 
-    binding_deltas: List[Any] = []
-    
-    metadata = proto_payload.get("metadata", {})
-    if isinstance(metadata, dict):
-        deltas = metadata.get("bindingDeltas")
-        if isinstance(deltas, list):
-            binding_deltas.extend(deltas)
-            
-    service_data = proto_payload.get("serviceData", {})
-    if isinstance(service_data, dict):
-        policy_delta = service_data.get("policyDelta", {})
-        if isinstance(policy_delta, dict):
-            deltas = policy_delta.get("bindingDeltas")
-            if isinstance(deltas, list):
-                binding_deltas.extend(deltas)
-
+    binding_deltas = _collect_binding_deltas(proto_payload)
     if binding_deltas:
         event_type = "gcp.iam.policy_change"
-        roles_added = []
-        roles_removed = []
+        roles_added: List[str] = []
+        roles_removed: List[str] = []
+        bindings_added: List[Dict[str, Optional[str]]] = []
         for delta in binding_deltas:
             if not isinstance(delta, dict):
                 continue
             action = delta.get("action")
-            role = delta.get("role")
-            if isinstance(role, str) and role:
-                if action == "ADD":
-                    roles_added.append(role)
-                elif action == "REMOVE":
-                    roles_removed.append(role)
+            role = _as_str(delta.get("role"))
+            if role is None:
+                continue
+            if action == "ADD":
+                roles_added.append(role)
+                bindings_added.append({"role": role, "member": _as_str(delta.get("member"))})
+            elif action == "REMOVE":
+                roles_removed.append(role)
         attributes["roles_added"] = roles_added
         attributes["roles_removed"] = roles_removed
+        attributes["bindings_added"] = bindings_added
 
     return NormalizedEvent(
         source="gcp_audit",
         event_type=event_type,
-        timestamp=timestamp,
-        principal=principal,
-        resource=resource,
+        timestamp=_as_str(raw.get("timestamp")),
+        principal=_as_str(auth_info.get("principalEmail")),
+        resource=_as_str(proto_payload.get("resourceName")),
         attributes=attributes,
-        raw=raw
+        raw=raw,
     )

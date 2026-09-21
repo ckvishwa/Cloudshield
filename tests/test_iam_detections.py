@@ -159,10 +159,13 @@ def test_gcp_iam_001_missing_optional_fields_does_not_crash():
     event = normalize_gcp_audit_event(raw_event)
     finding = evaluate_rule(load_rule(RULE_PATH), event)
 
-    assert event.principal == "unknown"
-    assert event.resource == "unknown"
+    assert event.principal is None
+    assert event.resource is None
+    assert event.timestamp is None
     assert finding is not None
-    assert finding.principal == "unknown"
+    assert finding.principal is None
+    assert finding.resource is None
+    assert finding.timestamp is None
 
 
 def test_gcp_iam_001_malformed_delta_alone_does_not_trigger():
@@ -272,3 +275,78 @@ def test_evaluate_rule_incomplete_condition_raises():
 
     with pytest.raises(ValueError):
         evaluate_rule(rule, event)
+
+
+def _full_event(*deltas, caller_ip="203.0.113.7"):
+    raw = _policy_change(*deltas)
+    raw["protoPayload"]["methodName"] = "SetIamPolicy"
+    if caller_ip is not None:
+        raw["protoPayload"]["requestMetadata"] = {"callerIp": caller_ip}
+    return raw
+
+
+def test_gcp_iam_001_finding_records_matched_role():
+    event = normalize_gcp_audit_event(
+        _full_event({"action": "ADD", "role": "roles/owner", "member": "user:b@example.com"})
+    )
+    finding = evaluate_rule(load_rule(RULE_PATH), event)
+
+    assert finding.matched_values == {"attributes.roles_added": ["roles/owner"]}
+
+
+def test_gcp_iam_001_mixed_bindings_match_only_dangerous_role():
+    event = normalize_gcp_audit_event(_full_event(
+        {"action": "ADD", "role": "roles/viewer", "member": "user:a@example.com"},
+        {"action": "ADD", "role": "roles/owner", "member": "user:b@example.com"},
+    ))
+    finding = evaluate_rule(load_rule(RULE_PATH), event)
+
+    assert finding.matched_values == {"attributes.roles_added": ["roles/owner"]}
+    assert "roles/viewer" in finding.evidence["event_attributes"]["roles_added"]
+
+
+def test_gcp_iam_001_member_correlated_with_owner_grant_only():
+    event = normalize_gcp_audit_event(_full_event(
+        {"action": "ADD", "role": "roles/viewer", "member": "user:a@example.com"},
+        {"action": "ADD", "role": "roles/owner", "member": "user:b@example.com"},
+    ))
+    finding = evaluate_rule(load_rule(RULE_PATH), event)
+
+    assert finding.evidence["matched_bindings"] == [
+        {"role": "roles/owner", "member": "user:b@example.com"}
+    ]
+
+
+def test_gcp_iam_001_caller_ip_and_operation_preserved():
+    event = normalize_gcp_audit_event(
+        _full_event({"action": "ADD", "role": "roles/owner", "member": "user:b@example.com"})
+    )
+    finding = evaluate_rule(load_rule(RULE_PATH), event)
+
+    assert event.attributes["source_ip"] == "203.0.113.7"
+    assert finding.source_ip == "203.0.113.7"
+    assert finding.method_name == "SetIamPolicy"
+
+
+def test_gcp_iam_001_timestamp_and_context_preserved():
+    event = normalize_gcp_audit_event(
+        _full_event({"action": "ADD", "role": "roles/owner", "member": "user:b@example.com"})
+    )
+    finding = evaluate_rule(load_rule(RULE_PATH), event)
+
+    assert finding.timestamp == "2023-10-27T12:00:00Z"
+    assert finding.principal == "admin@example.com"
+    assert finding.resource == "projects/cloudshield-lab"
+    assert finding.mitre_attack == "T1098"
+
+
+def test_gcp_iam_001_missing_caller_ip_and_member_are_none():
+    event = normalize_gcp_audit_event(
+        _policy_change({"action": "ADD", "role": "roles/owner"})
+    )
+    finding = evaluate_rule(load_rule(RULE_PATH), event)
+
+    assert finding is not None
+    assert finding.source_ip is None
+    assert finding.method_name is None
+    assert finding.evidence["matched_bindings"] == [{"role": "roles/owner", "member": None}]
