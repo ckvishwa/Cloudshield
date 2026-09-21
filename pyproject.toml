@@ -9,6 +9,7 @@ description = "CloudShield Detection Engineering Framework"
 requires-python = ">=3.11"
 dependencies = [
     "PyYAML",
+    "google-cloud-logging>=3.10",
 ]
 
 [project.optional-dependencies]
