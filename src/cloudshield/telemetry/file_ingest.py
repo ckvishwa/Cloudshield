@@ -11,11 +11,16 @@ Format rules:
 - Files are UTF-8 (a leading BOM is tolerated). An empty file yields ``[]``.
 - Events are returned in file order; the loader never mutates or reorders them.
 - ``max_events`` is a hard safety cap: a file with more events raises instead
-  of being silently truncated.
+  of being silently truncated. It is enforced while parsing (array elements and
+  lines are decoded one at a time), so a file of many tiny events is rejected
+  without first building every event.
+- JSONL lines are split on ``\n`` only (a trailing ``\r`` is dropped), so U+2028 /
+  U+2029 inside a JSON string are kept, as JSON allows.
+- Pathologically nested JSON is an ``IngestError``, never a ``RecursionError``.
 """
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, Iterator, List, Tuple, Union
 
 DEFAULT_MAX_EVENTS = 100_000
 DEFAULT_MAX_BYTES = 64 * 1024 * 1024
@@ -41,13 +46,41 @@ def _read_text(path: Path, max_bytes: int) -> str:
         raise IngestError(f"{path}: not valid UTF-8 ({exc.reason} at byte {exc.start})") from exc
 
 
-def _loads(text: str, where: str) -> Any:
+_WHITESPACE = " \t\n\r"
+_DECODER = json.JSONDecoder(parse_constant=_reject_constant)
+
+
+def _decode_at(text: str, index: int, where: str) -> Tuple[Any, int]:
+    """Decode one JSON value starting at ``index``; every failure is an IngestError."""
     try:
-        return json.loads(text, parse_constant=_reject_constant)
+        return _DECODER.raw_decode(text, index)
     except json.JSONDecodeError as exc:
         raise IngestError(f"{where}: invalid JSON: {exc.msg} (line {exc.lineno}, column {exc.colno})") from exc
+    except RecursionError as exc:
+        raise IngestError(f"{where}: invalid JSON: nested too deeply") from exc
     except ValueError as exc:
         raise IngestError(f"{where}: invalid JSON: {exc}") from exc
+
+
+def _skip_ws(text: str, index: int) -> int:
+    while index < len(text) and text[index] in _WHITESPACE:
+        index += 1
+    return index
+
+
+def _trailing_data_error(text: str, index: int, where: str) -> IngestError:
+    line = text.count("\n", 0, index) + 1
+    column = index - (text.rfind("\n", 0, index) + 1) + 1
+    return IngestError(f"{where}: invalid JSON: Extra data (line {line}, column {column})")
+
+
+def _loads(text: str, where: str) -> Any:
+    start = _skip_ws(text, 0)
+    value, end = _decode_at(text, start, where)
+    end = _skip_ws(text, end)
+    if end != len(text):
+        raise _trailing_data_error(text, end, where)
+    return value
 
 
 def _require_object(value: Any, where: str) -> Dict[str, Any]:
@@ -61,9 +94,46 @@ def _check_cap(count: int, max_events: int, path: Path) -> None:
         raise IngestError(f"{path}: more than {max_events} events (max_events cap)")
 
 
+def _iter_lines(text: str) -> Iterator[str]:
+    """Physical lines split on \\n only, lazily (no list of every line)."""
+    start = 0
+    while start < len(text):
+        end = text.find("\n", start)
+        if end == -1:
+            end = len(text)
+        line = text[start:end]
+        yield line[:-1] if line.endswith("\r") else line
+        start = end + 1
+
+
+def _iter_array(text: str, start: int, path: Path) -> Iterator[Tuple[int, Any]]:
+    """Yield (index, element) of the top-level array opening at ``start``, one at a time."""
+    where = str(path)
+    index = _skip_ws(text, start + 1)
+    if index < len(text) and text[index] == "]":
+        index += 1
+    else:
+        position = 0
+        while True:
+            value, index = _decode_at(text, index, where)
+            yield position, value
+            position += 1
+            index = _skip_ws(text, index)
+            if index < len(text) and text[index] == ",":
+                index = _skip_ws(text, index + 1)
+                continue
+            if index < len(text) and text[index] == "]":
+                index += 1
+                break
+            raise IngestError(f"{where}: invalid JSON: expected ',' or ']' after element {position - 1}")
+    index = _skip_ws(text, index)
+    if index != len(text):
+        raise _trailing_data_error(text, index, where)
+
+
 def _load_jsonl(path: Path, text: str, max_events: int) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
+    for line_number, line in enumerate(_iter_lines(text), start=1):
         if not line.strip():
             continue
         where = f"{path}: line {line_number}"
@@ -73,16 +143,20 @@ def _load_jsonl(path: Path, text: str, max_events: int) -> List[Dict[str, Any]]:
 
 
 def _load_json(path: Path, text: str, max_events: int) -> List[Dict[str, Any]]:
-    if not text.strip():
+    start = _skip_ws(text, 0)
+    if start == len(text):
         return []
+    if text[start] == "[":
+        events: List[Dict[str, Any]] = []
+        for index, item in _iter_array(text, start, path):
+            _check_cap(index + 1, max_events, path)
+            events.append(_require_object(item, f"{path}: element {index}"))
+        return events
     document = _loads(text, str(path))
     if isinstance(document, dict):
         return [document]
-    if not isinstance(document, list):
-        raise IngestError(f"{path}: top-level JSON must be an object or an array of objects, "
-                          f"got {type(document).__name__}")
-    _check_cap(len(document), max_events, path)
-    return [_require_object(item, f"{path}: element {index}") for index, item in enumerate(document)]
+    raise IngestError(f"{path}: top-level JSON must be an object or an array of objects, "
+                      f"got {type(document).__name__}")
 
 
 def load_events(
