@@ -2,7 +2,7 @@
 
 CloudShield is an offline detection engineering lab for GCP IAM and Kubernetes audit events. It normalizes
 audit records, runs versioned YAML rules, and evaluates findings against labeled synthetic and
-documentation-derived corpora. The public checkout currently passes **659 automated tests**.
+documentation-derived corpora. The public checkout currently passes **671 automated tests**.
 
 [![CI](https://github.com/ckvishwa/Cloudshield/actions/workflows/ci.yml/badge.svg)](https://github.com/ckvishwa/Cloudshield/actions/workflows/ci.yml)
 

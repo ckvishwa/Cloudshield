@@ -2,8 +2,25 @@ import copy
 from typing import Any, Dict, List, Optional
 from cloudshield.models import DetectionRule, NormalizedEvent, Finding
 
+# Rules may only read normalized facts. ``raw`` (and anything else) is off
+# limits: a matched condition copies the event value into Finding.matched_values,
+# so allowing it would let a rule move raw payload data (tokens, secrets) into
+# a finding.
+ALLOWED_FIELD_ROOTS = ("attributes", "principal", "resource", "timestamp")
+
+
+def check_field_path(field_path: str) -> None:
+    root = field_path.split('.', 1)[0]
+    if root not in ALLOWED_FIELD_ROOTS:
+        raise ValueError(
+            f"Condition field {field_path!r} is not allowed: rules may read only "
+            f"{list(ALLOWED_FIELD_ROOTS)} (never 'raw')"
+        )
+
+
 def _resolve_field(event: NormalizedEvent, field_path: str) -> Any:
     """Helper to resolve nested fields like 'attributes.roles_added'."""
+    check_field_path(field_path)
     parts = field_path.split('.')
     current: Any = event
     for part in parts:

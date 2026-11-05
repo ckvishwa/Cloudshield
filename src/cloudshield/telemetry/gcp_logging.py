@@ -260,6 +260,40 @@ def poll_audit_events(
         sleep(min(interval_seconds, remaining))
 
 
+def _replace_everywhere(value: Any, ordered: Sequence[str], replacements: Mapping[str, str]) -> Any:
+    """Copy of value with each replacement key substituted in every string, dict key
+    and number. Works on the decoded structure, never on JSON text, so values that
+    JSON would escape (quotes, backslashes, non-ASCII) are still found."""
+    if isinstance(value, str):
+        for original in ordered:
+            value = value.replace(original, replacements[original])
+        return value
+    if isinstance(value, Mapping):
+        return {_replace_everywhere(k, ordered, replacements): _replace_everywhere(v, ordered, replacements)
+                for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_replace_everywhere(v, ordered, replacements) for v in value]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        text = str(value)
+        replaced = _replace_everywhere(text, ordered, replacements)
+        return value if replaced == text else replaced
+    return value
+
+
+def _strings_in(value: Any) -> Any:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, Mapping):
+        for key, item in value.items():
+            yield from _strings_in(key)
+            yield from _strings_in(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _strings_in(item)
+    elif isinstance(value, (int, float)) and not isinstance(value, bool):
+        yield str(value)
+
+
 def redact_audit_dict(raw: Mapping[str, Any], replacements: Mapping[str, str]) -> Dict[str, Any]:
     """Copy of raw with every occurrence of each key replaced by its value.
 
@@ -268,17 +302,15 @@ def redact_audit_dict(raw: Mapping[str, Any], replacements: Mapping[str, str]) -
     """
     if any(not original for original in replacements):
         raise ValueError("replacement keys must be non-empty strings")
-    text = json.dumps(_plain(raw))
     # Longest first, so a project ID inside an email is not half-replaced.
-    for original in sorted(replacements, key=len, reverse=True):
-        text = text.replace(original, replacements[original])
-    redacted = json.loads(text)
+    ordered = sorted(replacements, key=len, reverse=True)
+    redacted = _replace_everywhere(_plain(raw), ordered, replacements)
     redacted.pop("insertId", None)
-    final_text = json.dumps(redacted)
-    leftover = [
+    survivors = [
         o for o in replacements
-        if o in final_text and not any(o in placeholder for placeholder in replacements.values())
+        if not any(o in placeholder for placeholder in replacements.values())
+        and any(o in text for text in _strings_in(redacted))
     ]
-    if leftover:
+    if survivors:
         raise ValueError("Redaction incomplete: original values still present")
     return redacted

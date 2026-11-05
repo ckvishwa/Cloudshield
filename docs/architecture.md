@@ -186,6 +186,7 @@ NormalizedEvent -> run_event()/run_events() -> evaluate_rule() per YAML rule -> 
   fail-fast on invalid rules or duplicate IDs).
 - The runner only sees `NormalizedEvent`, so new telemetry sources reuse it.
 - Telemetry adapters are the sanitization boundary: they extract the facts a detection needs and drop the rest. The Kubernetes adapter does not retain the raw event at all; the GCP audit adapter still attaches its input as `NormalizedEvent.raw`. That is a known gap, not a design choice; its offline corpus is synthetic or official-doc content and the optional Cloud Logging adapter already whitelists fields before normalization.
+- Rules may read only normalized fields (`attributes.*`, `principal`, `resource`, `timestamp`). Conditions on `raw.*` are rejected at load and at evaluation, because matched values are copied into `Finding.matched_values`. The GCP audit adapter still keeps `raw` on the `NormalizedEvent`; findings never include it.
 - Implemented detections: GCP-IAM-001, GCP-IAM-002, GCP-IAM-003, K8S-WORKLOAD-001, K8S-RBAC-001.
 
 ### Two IAM policy signals

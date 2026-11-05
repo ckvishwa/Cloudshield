@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Union
 
 import yaml
 
-from cloudshield.engine.evaluator import SUPPORTED_OPERATORS
+from cloudshield.engine.evaluator import SUPPORTED_OPERATORS, check_field_path
 from cloudshield.models import DetectionRule
 
 CONDITION_KEYS = {"field", "operator", "value"}
@@ -22,6 +22,10 @@ def validate_conditions(rule_id: str, conditions: List[Any]) -> None:
         prefix = f"Invalid condition in {rule_id} for {label}"
         if not isinstance(field, str) or not field:
             raise ValueError(f"{prefix}: missing or non-string 'field' in {condition!r}")
+        try:
+            check_field_path(field)
+        except ValueError as exc:
+            raise ValueError(f"{prefix}: {exc}") from exc
         extra = set(condition) - CONDITION_KEYS
         if extra:
             raise ValueError(
