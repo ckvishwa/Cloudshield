@@ -1,5 +1,22 @@
 # Cloudshield
 
+CloudShield is an offline detection engineering lab for GCP IAM and Kubernetes audit events. It normalizes
+audit records, runs versioned YAML rules, and evaluates findings against labeled synthetic and
+documentation-derived corpora. The public checkout currently passes **659 automated tests**.
+
+[![CI](https://github.com/ckvishwa/Cloudshield/actions/workflows/ci.yml/badge.svg)](https://github.com/ckvishwa/Cloudshield/actions/workflows/ci.yml)
+
+The corpus scores are regression checks, not production detection accuracy. The optional live GCP
+backend is unit-tested with mocks; no live GCP or GKE validation is claimed.
+
+## Run locally
+
+```bash
+python -m pip install -e ".[test]"
+python -m pytest -q
+python scripts/replay_dataset.py --dataset datasets/gcp_audit --mode instant
+```
+
 ## Detections
 
 | Rule ID | Title |
